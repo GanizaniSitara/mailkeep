@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Mailkeep.Core\Mailkeep.Core.csproj" />
+    <ProjectReference Include="..\Mailkeep.Infrastructure\Mailkeep.Infrastructure.csproj" />
+    <!-- The reading pane's HTML view. Mail has been written as a page for twenty years and a client that
+         shows only the text of one is reading somebody else's letter with the pictures torn out. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
+  </ItemGroup>
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Mailkeep.WinForms</AssemblyName>
+    <ApplicationIcon>..\..\mailkeep.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="..\..\installer\ThirdParty\*" Link="ThirdParty\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets/Icons/*.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\mailkeep.ico" Link="mailkeep.ico" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Data/TrackingDomains.txt" LogicalName="Mailkeep.TrackingDomains" />
+    <Content Include="Data/TrackingDomains.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

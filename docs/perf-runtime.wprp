@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- this work item: CLR loader/JIT events and process/module lifetime only. No stacks, switches, graphics or disk events. -->
+<WindowsPerformanceRecorder Version="1.0" Author="Mailkeep">
+  <Profiles>
+    <SystemCollector Id="RuntimeSystem" Name="Mailkeep process lifetime">
+      <BufferSize Value="64" /><Buffers Value="64" />
+    </SystemCollector>
+    <EventCollector Id="RuntimeEvents" Name="Mailkeep CLR startup">
+      <BufferSize Value="64" /><Buffers Value="64" />
+    </EventCollector>
+    <SystemProvider Id="RuntimeProcess">
+      <Keywords><Keyword Value="ProcessThread" /><Keyword Value="Loader" /></Keywords>
+    </SystemProvider>
+    <EventProvider Id="ClrStartup" Name="Microsoft-Windows-DotNETRuntime" Level="5">
+      <Keywords><Keyword Value="0x18" /></Keywords>
+    </EventProvider>
+    <Profile Id="MailkeepRuntime.Verbose.File" Name="MailkeepRuntime" Description="CLR loader and JIT startup only" DetailLevel="Verbose" LoggingMode="File">
+      <Collectors>
+        <SystemCollectorId Value="RuntimeSystem"><SystemProviderId Value="RuntimeProcess" /></SystemCollectorId>
+        <EventCollectorId Value="RuntimeEvents"><EventProviders><EventProviderId Value="ClrStartup" /></EventProviders></EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

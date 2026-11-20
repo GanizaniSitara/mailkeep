@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Mailkeep Beta" Language="1033" Version="$(var.ProductVersion)"
+           Manufacturer="Mailkeep" UpgradeCode="BF1D3307-4716-4D68-9F9B-775029A8714E">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             InstallPrivileges="limited" Platform="x64" Description="Mailkeep public beta candidate" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Mailkeep Beta is already installed."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Property Id="ARPPRODUCTICON" Value="MailkeepIcon" />
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+    <Icon Id="MailkeepIcon" SourceFile="$(var.PayloadDir)\mailkeep.ico" />
+    <!-- Windows Installer can report VersionNT=603 on Windows 10. Read the
+         actual build from the 64-bit OS registry view rather than that shim. -->
+    <Property Id="MAILKEEP_OS_BUILD">
+      <RegistrySearch Id="WindowsBuildNumber" Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion" Name="CurrentBuildNumber" Type="raw" Win64="yes" />
+    </Property>
+    <Condition Message="Mailkeep requires 64-bit Windows 10 version 22H2 or later.">Installed OR (VersionNT64 AND MAILKEEP_OS_BUILD &gt;= 19045)</Condition>
+    <Property Id="WEBVIEW2_MACHINE">
+      <RegistrySearch Id="WebViewMachine" Root="HKLM" Key="SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" Name="pv" Type="raw" Win64="no" />
+    </Property>
+    <Property Id="WEBVIEW2_USER">
+      <RegistrySearch Id="WebViewUser" Root="HKCU" Key="SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" Name="pv" Type="raw" Win64="no" />
+    </Property>
+    <Condition Message="Mailkeep requires Microsoft Edge WebView2 Evergreen Runtime for reading and composing HTML mail. Install that runtime, then run this installer again. No runtime will be downloaded automatically.">Installed OR (WEBVIEW2_MACHINE AND WEBVIEW2_MACHINE &lt;&gt; "0.0.0.0") OR (WEBVIEW2_USER AND WEBVIEW2_USER &lt;&gt; "0.0.0.0")</Condition>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="UserPrograms" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="Mailkeep">
+            <Component Id="MailRegistration" Guid="CDEFFFEF-6960-447D-98BA-078B18FB9D13" Win64="yes">
+              <RegistryValue Root="HKCU" Key="Software\Mailkeep\Installer" Name="Version" Value="[ProductVersion]" Type="string" KeyPath="yes" />
+              <RegistryValue Root="HKCU" Key="Software\Classes\Mailkeep.Url.mailto" Value="URL:MailTo Protocol" Type="string" />
+              <RegistryValue Root="HKCU" Key="Software\Classes\Mailkeep.Url.mailto" Name="URL Protocol" Value="" Type="string" />
+              <RegistryValue Root="HKCU" Key="Software\Classes\Mailkeep.Url.mailto\DefaultIcon" Value="&quot;[INSTALLFOLDER]Mailkeep.WinForms.exe&quot;,0" Type="string" />
+              <RegistryValue Root="HKCU" Key="Software\Classes\Mailkeep.Url.mailto\shell\open\command" Value="&quot;[INSTALLFOLDER]Mailkeep.WinForms.exe&quot; &quot;%1&quot;" Type="string" />
+              <RegistryValue Root="HKCU" Key="Software\Clients\Mail\Mailkeep\Capabilities" Name="ApplicationName" Value="Mailkeep" Type="string" />
+              <RegistryValue Root="HKCU" Key="Software\Clients\Mail\Mailkeep\Capabilities" Name="ApplicationDescription" Value="Mailkeep mail" Type="string" />
+              <RegistryValue Root="HKCU" Key="Software\Clients\Mail\Mailkeep\Capabilities\URLAssociations" Name="mailto" Value="Mailkeep.Url.mailto" Type="string" />
+              <RegistryValue Root="HKCU" Key="Software\RegisteredApplications" Name="Mailkeep" Value="Software\Clients\Mail\Mailkeep\Capabilities" Type="string" />
+              <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+              <RemoveFolder Id="RemoveEmptyProgramsParent" Directory="UserPrograms" On="uninstall" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="MailkeepMenu" Name="Mailkeep">
+          <Component Id="StartMenuShortcut" Guid="4C23146D-3DC2-465E-B414-510DDC9AF074" Win64="yes">
+            <Shortcut Id="MailkeepShortcut" Name="Mailkeep" Target="[INSTALLFOLDER]Mailkeep.WinForms.exe" WorkingDirectory="INSTALLFOLDER" Icon="MailkeepIcon" />
+            <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\Mailkeep\Installer" Name="StartMenu" Value="1" Type="integer" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+    <Feature Id="Complete" Title="Mailkeep" Level="1">
+      <ComponentGroupRef Id="Payload" />
+      <ComponentRef Id="MailRegistration" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UIRef Id="WixUI_InstallDir" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">1</Publish>
+    </UI>
+  </Product>
+</Wix>

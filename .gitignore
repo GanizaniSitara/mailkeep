@@ -1,0 +1,71 @@
+# Fetched mail, and anything else the runtime writes. The database holds real
+# mailbox contents — it must never enter the repo. Runtime data lives beside the
+# deployed copy, not here.
+data/
+*.db
+*.db-shm
+*.db-wal
+pending_enroll.json
+logs/
+
+# Credential store: DPAPI-CurrentUser encrypted, kept beside the runtime.
+# Encrypted or not, it does not belong in version control.
+*.dpapi
+accounts.dpapi
+
+# Local environment / OAuth client secrets
+.env
+.env.local
+client_secret*.json
+token*.json
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# .NET build and IDE output
+**/bin/
+**/obj/
+.vs/
+*.user
+/publish/
+/artifacts/
+/.ui-debug/
+
+# Private migration fixtures, mail copies, and local audit evidence.
+/scratch/
+
+# Private mail exports, credentials, backups and diagnostic dumps.
+*.eml
+*.msg
+*.pst
+*.ost
+*.mbox
+*.sqlite
+*.sqlite3
+*.mkdb
+*.mkdb-wal
+*.mkdb-shm
+*-journal
+*.mbx
+*.etl
+*.mdmp
+*.zip
+*.7z
+*.log
+*.png
+!src/Mailkeep.WinForms/Assets/Icons/*.png
+secrets.json
+/.cli-smoke/
+*.bak
+*.pfx
+*.p12
+*.pem
+*.key
+*.dmp
+*.stackdump
+.env.*
+!.env.example

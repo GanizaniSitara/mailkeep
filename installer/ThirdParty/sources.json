@@ -1,0 +1,52 @@
+[
+  {
+    "name": "MailKit",
+    "url": "https://raw.githubusercontent.com/jstedfast/MailKit/4.17.0/LICENSE",
+    "sha256": "35b9fc9bfb7a201a6e0b9e3ce71b639a830a2347d4aea55a2b1affbc487a1fb3"
+  },
+  {
+    "name": "MimeKit",
+    "url": "https://raw.githubusercontent.com/jstedfast/MimeKit/4.17.0/LICENSE",
+    "sha256": "c613af70a219d1cafd732f2cefd4fca9f1462ac5696f8461108a7d643513f3bf"
+  },
+  {
+    "name": "SQLitePCLRaw",
+    "url": "https://raw.githubusercontent.com/ericsink/SQLitePCL.raw/v2.1.11/LICENSE.TXT",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "name": "Microsoft.Data.Sqlite",
+    "url": "https://raw.githubusercontent.com/dotnet/dotnet/f7d90799ce4ef09a0bb257852a57248d2a8fb8dd/LICENSE.TXT",
+    "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b"
+  },
+  {
+    "file": "BouncyCastle.LICENSE.txt",
+    "nuget_source": "bouncycastle.cryptography/2.6.2/LICENSE.md",
+    "sha256": "afc1653b666b64a2386b7b9b914406904f45c20b9571765d8c1121b513313179"
+  },
+  {
+    "file": "NETRuntime.LICENSE.txt",
+    "nuget_source": "microsoft.netcore.app.runtime.win-x64/10.0.11/LICENSE.TXT",
+    "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b"
+  },
+  {
+    "file": "NETRuntime.THIRD-PARTY-NOTICES.txt",
+    "nuget_source": "microsoft.netcore.app.runtime.win-x64/10.0.11/THIRD-PARTY-NOTICES.TXT",
+    "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21"
+  },
+  {
+    "file": "WindowsDesktop.LICENSE.txt",
+    "nuget_source": "microsoft.windowsdesktop.app.runtime.win-x64/10.0.11/LICENSE",
+    "sha256": "a89886665765362eb77e0f8e26602c924520041d1711b2eedc136434fe4d01ab"
+  },
+  {
+    "file": "WebView2.LICENSE.txt",
+    "nuget_source": "microsoft.web.webview2/1.0.4078.44/LICENSE.txt",
+    "sha256": "0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55"
+  },
+  {
+    "file": "WebView2.NOTICE.txt",
+    "nuget_source": "microsoft.web.webview2/1.0.4078.44/NOTICE.txt",
+    "sha256": "106423785c5b7eba0a8e61d1837f2132e9c828e20ad530f565d981c1df60dd90"
+  }
+]

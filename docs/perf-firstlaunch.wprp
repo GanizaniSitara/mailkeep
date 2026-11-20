@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- this work item: bounded first-launch CPU, image-backed page-in and disk reads. No graphics or context-switch stacks. -->
+<WindowsPerformanceRecorder Version="1.0" Author="Mailkeep">
+  <Profiles>
+    <SystemCollector Id="FirstSystem" Name="Mailkeep first launch">
+      <BufferSize Value="256" /><Buffers Value="256" />
+    </SystemCollector>
+    <EventCollector Id="FirstRuntime" Name="Mailkeep first launch CLR">
+      <BufferSize Value="256" /><Buffers Value="256" />
+    </EventCollector>
+    <SystemProvider Id="FirstSamples">
+      <Keywords>
+        <Keyword Value="ProcessThread" /><Keyword Value="Loader" /><Keyword Value="SampledProfile" />
+        <Keyword Value="HardFaults" /><Keyword Value="DiskIO" /><Keyword Value="DiskIOInit" /><Keyword Value="Filename" />
+      </Keywords>
+      <Stacks><Stack Value="SampledProfile" /><Stack Value="HardFault" /><Stack Value="DiskReadInit" /></Stacks>
+    </SystemProvider>
+    <EventProvider Id="FirstClr" Name="Microsoft-Windows-DotNETRuntime" Level="5" ProcessExeFilter="Mailkeep.WinForms.exe">
+      <Keywords><Keyword Value="0x20038" /></Keywords>
+      <CaptureStateOnSave><Keyword Value="0x70138" /></CaptureStateOnSave>
+    </EventProvider>
+    <EventProvider Id="FirstClrRundown" Name="Microsoft-Windows-DotNETRuntimeRundown" Level="5" CaptureStateOnly="true" ProcessExeFilter="Mailkeep.WinForms.exe">
+      <CaptureStateOnSave><Keyword Value="0x70138" /></CaptureStateOnSave>
+    </EventProvider>
+    <Profile Id="MailkeepFirstLaunch.Verbose.File" Name="MailkeepFirstLaunch" Description="First launch CPU, hard faults and disk reads" DetailLevel="Verbose" LoggingMode="File">
+      <Collectors>
+        <SystemCollectorId Value="FirstSystem"><SystemProviderId Value="FirstSamples" /></SystemCollectorId>
+        <EventCollectorId Value="FirstRuntime"><EventProviders><EventProviderId Value="FirstClr" /><EventProviderId Value="FirstClrRundown" /></EventProviders></EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

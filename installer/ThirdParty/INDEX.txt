@@ -1,0 +1,25 @@
+Mailkeep dependency notices
+
+These texts accompany the packaged dependencies. Original notices are preserved
+verbatim. sources.json records the upstream URL or cached NuGet package and SHA256.
+
+BouncyCastle.Cryptography 2.6.2: BouncyCastle.LICENSE.txt
+MailKit 4.17.0: MailKit.LICENSE.txt
+MimeKit 4.17.0: MimeKit.LICENSE.txt
+Microsoft.Data.Sqlite and Microsoft.Data.Sqlite.Core 10.0.10:
+  Microsoft.Data.Sqlite.LICENSE.txt
+SQLitePCLRaw bundle/core/provider/lib.e_sqlite3 2.1.11:
+  SQLitePCLRaw.LICENSE.txt
+  Copyright 2014-2024 SourceGear, LLC (NuGet package attribution).
+Microsoft.NETCore.App.Runtime.win-x64 10.0.11:
+  NETRuntime.LICENSE.txt and NETRuntime.THIRD-PARTY-NOTICES.txt
+Microsoft.WindowsDesktop.App.Runtime.win-x64 10.0.11:
+  WindowsDesktop.LICENSE.txt
+Microsoft.Web.WebView2 1.0.4078.44:
+  WebView2.LICENSE.txt and WebView2.NOTICE.txt
+
+The GUI tracking-domain list has separate attribution in
+Data/TrackingDomains.LICENSE.txt and its embedded resource header.
+
+This inventory does not establish ownership of Mailkeep branding or artwork.
+Those assets still require provenance review before public distribution.
