@@ -323,7 +323,7 @@ internal sealed partial class MainForm : Form
         message.DropDownItems.Add(ComposeItem("Reply to &All", async () => await ReplyAsync(true), "Reply All menu item", true));
         message.DropDownItems.Add(ComposeItem("F&orward", async () => await ForwardAsync(), "Forward menu item", true));
         message.DropDownItems.Add(new ToolStripSeparator());
-        message.DropDownItems.Add(Item("Open &HTML in Brave", OpenHtml, "Open HTML menu item"));
+        message.DropDownItems.Add(Item("Open &HTML", OpenHtml, "Open HTML menu item"));
         message.DropDownItems.Add(Item("&Delete", async () => await DeleteAsync(), "Delete message menu item"));
         var serverMove = Item("Move to server folder…", async () => await MoveToServerFolderAsync(), "Move to server folder");
         message.DropDownItems.Add(serverMove);
@@ -741,6 +741,8 @@ internal sealed partial class MainForm : Form
             if (IsDisposed || Disposing) return;
             TimingLog.Mark("first message read");
             _ready = true;
+            if (sidebar.UncertainSends > 0)
+                _status.Text = $"{sidebar.UncertainSends} message(s) may or may not have been sent. Open Outbox to review them; nothing will be retried automatically.";
             SetReadyControls(true);
             UpdateComposeState();
             if (!StartupDiagnostics.Skip("HOTKEY")) StartupDiagnostics.Time("RegisterSearchHotkey", RegisterSearchHotkey);
@@ -793,7 +795,7 @@ internal sealed partial class MainForm : Form
         IReadOnlyDictionary<string, int> AccountUnreadCounts,
         IReadOnlyDictionary<string, DateTimeOffset> Latest,
         IGrouping<string, (string Account, string Folder, int Total, int Unread)>[] Archived,
-        IReadOnlyList<LocalFolder> Folders, int OutboxCount, ReadCounts ReadCounts, IReadOnlySet<string> WritableFolders);
+        IReadOnlyList<LocalFolder> Folders, int OutboxCount, ReadCounts ReadCounts, IReadOnlySet<string> WritableFolders, int UncertainSends);
 
     // Read and adopt folders on a worker at startup; only building native controls belongs on the UI thread.
     private SidebarData LoadSidebarData() => LoadSidebarData(fromSaved: false);
@@ -822,8 +824,9 @@ internal sealed partial class MainForm : Form
             _services.Database.AccountUnreadCounts(),
             StartupDiagnostics.Time("Sidebar.LatestDates", _services.Database.AccountLatestDates),
             archived, StartupDiagnostics.Time("Sidebar.Folders", _services.Database.ListLocalFolders),
-            StartupDiagnostics.Time("Sidebar.Outbox", () => _services.Database.ListOutgoing(OutgoingStates.Outbox, 1000).Count),
-            readCounts, _services.Database.FolderStorage.Inspect().Folders.Select(f => f.Key).ToHashSet(StringComparer.OrdinalIgnoreCase));
+            StartupDiagnostics.Time("Sidebar.Outbox", () => _services.Database.ListOutbox(1000).Count),
+            readCounts, _services.Database.FolderStorage.Inspect().Folders.Select(f => f.Key).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            _services.Database.ListStaleSending().Count);
     }
 
     /// <summary>The import's folder counts as last drawn, written down when the window closes.</summary>
@@ -1311,7 +1314,7 @@ internal sealed partial class MainForm : Form
                             : _services.Database.ListMessagesForAccounts(scoped.ToArray(), key, WholeFolder),
                         key is null
                             ? (IReadOnlyList<OutgoingMessage>)[]
-                            : outgoingState == OutgoingStates.Outbox ? _services.Database.ListOutgoing(outgoingState, 500)
+                            : outgoingState == OutgoingStates.Outbox ? _services.Database.ListOutbox(500)
                             : _services.Database.ListDraftsInFolder(key, 500),
                         // What this mailbox holds of its own, in any folder: an imported copy of any of it is
                         // the same message twice, wherever the mailbox's copy has since been filed.
@@ -2175,6 +2178,25 @@ internal sealed partial class MainForm : Form
         if (Current() is OutgoingMessage outgoing)
         {
             if (outgoing.Status == OutgoingStates.Draft) await EditDraftAsync(outgoing);
+            else if (outgoing.Status == OutgoingStates.Sending)
+            {
+                var decision = MessageBox.Show(this, MailDatabase.UncertainSendWarning
+                    + "\r\n\r\nYes: Mark as sent.\r\nNo: Return to Outbox (may send a duplicate).\r\nCancel: Leave unchanged.",
+                    "Uncertain delivery", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button3);
+                if (decision == DialogResult.Cancel) return;
+                try
+                {
+                    await Task.Run(() => _services.Database.RecoverStaleSending(outgoing.Id, decision == DialogResult.Yes));
+                    if (decision == DialogResult.Yes) await _services.Send.CompleteAcceptedAsync(outgoing.Id);
+                    await RefreshAfterComposeAsync();
+                }
+                catch (Exception error) { ShowError("Could not recover uncertain delivery", error); }
+            }
+            else if (outgoing.Status == OutgoingStates.SentUnrecorded)
+            {
+                await _services.Send.CompleteAcceptedAsync(outgoing.Id);
+                await RefreshAfterComposeAsync();
+            }
             else if (outgoing.Status == OutgoingStates.Outbox)
             {
                 if (MessageBox.Show(this, "Move this message back to Drafts for editing?\r\n\r\nIt will not be sent until you place it in the Outbox again.",
@@ -3441,9 +3463,7 @@ internal sealed partial class MainForm : Form
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, $"message-{content.Summary.Id}.html");
         File.WriteAllText(path, SafeHtml(content.BodyHtml));
-        const string brave = @"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe";
-        if (!File.Exists(brave)) { MessageBox.Show(this, "Brave Browser was not found.", "Open HTML"); return; }
-        Process.Start(new ProcessStartInfo(brave, path) { UseShellExecute = false });
+        BrowserLauncher.Open(path);
     }
 
     /// <summary>DetectUrls underlines bare www. links without a scheme, and ShellExecute treats those as
@@ -3461,11 +3481,7 @@ internal sealed partial class MainForm : Form
     /// <summary>The letter with everything that could run or fetch a page taken out: scripts, frames, forms,
     /// embedded objects and a refresh.</summary>
     internal static string StripActiveContent(string html)
-    {
-        var body = Regex.Replace(html, @"<(script|iframe|object|embed|form|base)\b[^>]*>.*?</\1\s*>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        body = Regex.Replace(body, @"<(script|iframe|object|embed|form|base)\b[^>]*/?>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        return Regex.Replace(body, "<meta\\b[^>]*http-equiv\\s*=\\s*['\\\"]?refresh[^>]*>", "", RegexOptions.IgnoreCase);
-    }
+        => MessageHtmlSafety.StripActiveContent(html);
 
     internal static string SafeHtml(string html, IEnumerable<string>? imageOrigins = null)
     {

@@ -15,8 +15,7 @@ internal static class RemoteImageFetcher
         Timeout = TimeSpan.FromSeconds(12)
     };
     private const long MaxBytes = 8 * 1024 * 1024;
-    private sealed record CachedImage(string Data, string[] Origins);
-    private static readonly Dictionary<string, CachedImage> Cache = new(StringComparer.Ordinal);
+    private static readonly RemoteImageCache Cache = new();
 
     static RemoteImageFetcher()
     {
@@ -71,7 +70,7 @@ internal static class RemoteImageFetcher
 
     private static async Task<string?> FetchAsync(string url, IReadOnlySet<string> allowed, CancellationToken cancellationToken)
     {
-        lock (Cache) if (Cache.TryGetValue(url, out var cached) && cached.Origins.All(allowed.Contains)) return cached.Data;
+        if (Cache.Get(url, allowed) is { } cached) return cached;
         try
         {
             var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -94,11 +93,10 @@ internal static class RemoteImageFetcher
                 if (!type.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) return null;
                 if (response.Content.Headers.ContentLength is > MaxBytes) return null;
                 await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var buffer = new MemoryStream();
-                await stream.CopyToAsync(buffer, cancellationToken);
-                if (buffer.Length > MaxBytes) return null;
-                var data = "data:" + type + ";base64," + Convert.ToBase64String(buffer.ToArray());
-                lock (Cache) Cache[url] = new(data, visited.ToArray());
+                var bytes = await RemoteImageCache.ReadBoundedAsync(stream, MaxBytes, cancellationToken);
+                if (bytes is null) return null;
+                var data = "data:" + type + ";base64," + Convert.ToBase64String(bytes);
+                Cache.Add(url, data, visited.ToArray());
                 return data;
             }
             return null;

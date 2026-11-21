@@ -17,7 +17,7 @@ Global: --root PATH
                                   How often an unattended pass collects the account (or take it off the timer)
   senders                         List configured Sending Identities (never credentials)
   senders set ID [--display-name N] [--reply-to A] [--smtp-host H] [--smtp-port P]
-             [--security ssl_on_connect|starttls|auto|none] [--username U] [--password P] [--execute]
+             [--security ssl_on_connect|starttls|auto|none] [--username U] [--password-stdin] [--execute]
   senders authorize ID [--execute]  Grant SMTP send access through the browser (Gmail/Microsoft)
   senders test ID [--execute]     Authenticate against SMTP without sending; marks the identity ready
   senders default ID [--execute]  Make one identity the default From address
@@ -38,6 +38,8 @@ Global: --root PATH
                                   Dry-run or invalidate and rebuild one extractor version
   drafts                          List saved drafts
   outbox                          List queued/retrying messages
+  recover-send ID --mark-sent|--return-to-outbox [--execute]
+                                  Resolve an uncertain send explicitly; never redeliver automatically
   prepare --identity I --to X --subject S (--body B|--body-file PATH) [--html-file PATH] [--attach PATH]... [--execute]
                                   Save a draft; with --html-file it goes formatted, text derived if not given;
                                   --attach repeats, one file each, and a missing file fails before saving
@@ -417,7 +419,8 @@ try
         "baseline" => await BaselineAsync(services, commandArgs),
         "index" => Index(services, commandArgs, cancellation.Token),
         "drafts" => services.Database.ListOutgoing(OutgoingStates.Draft, IntOption(commandArgs, "--limit", 100)),
-        "outbox" => services.Database.ListOutgoing(OutgoingStates.Outbox, IntOption(commandArgs, "--limit", 100)),
+        "outbox" => services.Database.ListOutbox(IntOption(commandArgs, "--limit", 100)),
+        "recover-send" => await RecoverSendAsync(services, commandArgs),
         "prepare" => Prepare(services, commandArgs),
         "discard" => Discard(services, commandArgs),
         "queue" => await QueueAsync(services, commandArgs),
@@ -649,7 +652,7 @@ static async Task<object> SendersAsync(MailkeepServices services, string[] args)
             IntOption(args, "--smtp-port", identity.Smtp.Port),
             Security(StringOption(args, "--security")) ?? identity.Smtp.Security)
     };
-    if (StringOption(args, "--password") is { Length: > 0 } password) updated = updated with { Password = password, OAuth = null };
+    if (await Mailkeep.Cli.PasswordInput.ReadAsync(args, Console.In) is { Length: > 0 } password) updated = updated with { Password = password, OAuth = null };
     updated = SendingIdentityStore.ResetTestIfConnectionChanged(identity, updated);
     if (!args.Contains("--execute", StringComparer.OrdinalIgnoreCase))
         return new { ExecuteRequired = true, Current = SenderResult(identity), Proposed = SenderResult(updated) };
@@ -703,6 +706,21 @@ static object Prepare(MailkeepServices services, string[] args)
         return new { ExecuteRequired = true, Identity = identity, To = to, Cc = cc, Bcc = bcc, Subject = subject, BodyLength = body.Length, HtmlLength = html?.Length ?? 0,
             Attachments = attachments.Select(Path.GetFileName) };
     return services.Send.SaveDraft(identity, to, subject, body, cc, bcc, attachmentPaths: attachments, bodyHtml: html);
+}
+
+static async Task<object> RecoverSendAsync(MailkeepServices services, string[] args)
+{
+    if (args.Length < 2) throw new ArgumentException("recover-send requires a message id.");
+    var mark = args.Contains("--mark-sent", StringComparer.OrdinalIgnoreCase);
+    var requeue = args.Contains("--return-to-outbox", StringComparer.OrdinalIgnoreCase);
+    if (mark == requeue) throw new ArgumentException("Choose exactly one of --mark-sent or --return-to-outbox.");
+    var message = services.Database.ListStaleSending().FirstOrDefault(message => message.Id == args[1])
+        ?? throw new InvalidOperationException("No stale uncertain send with this id.");
+    if (!args.Contains("--execute", StringComparer.OrdinalIgnoreCase))
+        return new { ExecuteRequired = true, Warning = MailDatabase.UncertainSendWarning, Message = message, MarkAsSent = mark };
+    services.Database.RecoverStaleSending(message.Id, mark);
+    if (mark) await services.Send.CompleteAcceptedAsync(message.Id);
+    return new { Recovered = true, Message = services.Database.GetOutgoing(message.Id) };
 }
 
 static async Task<object> QueueAsync(MailkeepServices services, string[] args)
@@ -821,7 +839,7 @@ static object SetKeepAlive(MailkeepServices services, string[] args)
     var keepAlive = new KeepAliveSettings(!args.Contains("--off", StringComparer.OrdinalIgnoreCase), hours);
     if (!args.Contains("--execute", StringComparer.OrdinalIgnoreCase))
         return new { ExecuteRequired = true, Account = account.Name, KeepAlive = keepAlive };
-    services.Accounts.Upsert(account with { KeepAlive = keepAlive });
+    services.Accounts.SetKeepAlive(account.Name, keepAlive.Enabled, keepAlive.IntervalHours);
     return new { Updated = account.Name, KeepAlive = keepAlive };
 }
 
