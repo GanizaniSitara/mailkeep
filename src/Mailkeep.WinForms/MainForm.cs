@@ -713,7 +713,11 @@ internal sealed partial class MainForm : Form
             if (openingLayout is null) layout?.Restore(this,
                 _mainSplit, _folderSplit, _previewSplit, _messages, _expandedFolders, restoreWindow: !_windowRestored);
             if (Enum.TryParse<AccountSort>(startup.Sort, out var loadedSort)) _accountSort = loadedSort;
-            var sidebar = await Task.Run(() => LoadSidebarData(fromSaved: true));
+            var sidebar = await Task.Run(() =>
+            {
+                PreviewFiles.Cleanup(_services.Paths, includeLegacyShared: true);
+                return LoadSidebarData(fromSaved: true);
+            });
             TimingLog.Mark("folders read");
             if (IsDisposed || Disposing) return;
             StartupDiagnostics.Time("Sidebar.Render", () => ReloadAccounts(sidebar));
@@ -741,6 +745,7 @@ internal sealed partial class MainForm : Form
             if (IsDisposed || Disposing) return;
             TimingLog.Mark("first message read");
             _ready = true;
+            _ = CleanupBlobsOnIdleAsync();
             if (sidebar.UncertainSends > 0)
                 _status.Text = $"{sidebar.UncertainSends} message(s) may or may not have been sent. Open Outbox to review them; nothing will be retried automatically.";
             SetReadyControls(true);
@@ -781,6 +786,22 @@ internal sealed partial class MainForm : Form
             TimingLog.Mark("painted");
             StartupDiagnostics.Mark("application idle after reveal (not presentation)");
         }
+    }
+
+    private async Task CleanupBlobsOnIdleAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), _remoteStop.Token);
+            var discover = true;
+            while (!_remoteStop.IsCancellationRequested)
+            {
+                await Task.Run(() => _services.Database.SweepUnreferencedBlobs(discover), _remoteStop.Token);
+                discover = false;
+                await Task.Delay(TimeSpan.FromMinutes(5), _remoteStop.Token);
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     private async Task StartReadingPaneAsync()
@@ -3457,13 +3478,25 @@ internal sealed partial class MainForm : Form
     private void OpenHtml() { if (_currentContent is { } content) OpenHtmlFor(content); }
 
     private void OpenHtmlFor(MessageContent content)
+        => _ = OpenHtmlFileAsync(content);
+
+    private async Task OpenHtmlFileAsync(MessageContent content)
     {
         if (string.IsNullOrWhiteSpace(content.BodyHtml)) return;
-        var directory = Path.Combine(Path.GetTempPath(), "Mailkeep", "html-preview");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, $"message-{content.Summary.Id}.html");
-        File.WriteAllText(path, SafeHtml(content.BodyHtml));
-        BrowserLauncher.Open(path);
+        try
+        {
+            var path = await Task.Run(() =>
+            {
+                var directory = PreviewFiles.HtmlDirectory(_services.Paths);
+                Directory.CreateDirectory(directory);
+                var file = Path.Combine(directory, $"message-{content.Summary.Id}-{Guid.NewGuid():N}.html");
+                File.WriteAllText(file, SafeHtml(content.BodyHtml));
+                return file;
+            });
+            _ = PreviewFiles.ExpireHtmlAsync(path);
+            if (!IsDisposed && !Disposing) BrowserLauncher.Open(path);
+        }
+        catch (Exception error) { if (!IsDisposed && !Disposing) ShowError("Could not open HTML", error); }
     }
 
     /// <summary>DetectUrls underlines bare www. links without a scheme, and ShellExecute treats those as

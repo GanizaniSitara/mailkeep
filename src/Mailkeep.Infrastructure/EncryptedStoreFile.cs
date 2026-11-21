@@ -5,14 +5,14 @@ namespace Mailkeep.Infrastructure;
 
 internal static class EncryptedStoreFile
 {
-    public static T Locked<T>(string path, Func<T> operation)
+    public static T Locked<T>(string path, Func<T> operation, TimeSpan? timeout = null)
     {
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(path).ToUpperInvariant())));
         using var mutex = new Mutex(false, "Global\\Mailkeep.Store." + key);
         var acquired = false;
         try
         {
-            try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(30)); }
+            try { acquired = mutex.WaitOne(timeout ?? TimeSpan.FromSeconds(30)); }
             catch (AbandonedMutexException) { acquired = true; }
             if (!acquired) throw new IOException("Timed out waiting for the credential store writer.");
             return operation();

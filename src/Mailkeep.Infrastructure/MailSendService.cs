@@ -117,6 +117,10 @@ public sealed class MailSendService
     public OutgoingMessage SaveDraft(string sendingIdentityId, IReadOnlyList<string> to, string subject, string bodyText,
         IReadOnlyList<string>? cc = null, IReadOnlyList<string>? bcc = null, string? id = null,
         IReadOnlyList<string>? attachmentPaths = null, string? bodyHtml = null)
+        => _blobs.WithReferences(() => SaveDraftLocked(sendingIdentityId, to, subject, bodyText, cc, bcc, id, attachmentPaths, bodyHtml));
+
+    private OutgoingMessage SaveDraftLocked(string sendingIdentityId, IReadOnlyList<string> to, string subject, string bodyText,
+        IReadOnlyList<string>? cc, IReadOnlyList<string>? bcc, string? id, IReadOnlyList<string>? attachmentPaths, string? bodyHtml)
     {
         RequireIdentity(sendingIdentityId);
         var existing = id is null ? null : _database.GetOutgoing(id);
@@ -186,9 +190,12 @@ public sealed class MailSendService
         using var message = BuildMime(draft, identity);
         await using var raw = new MemoryStream();
         await message.WriteToAsync(raw, cancellationToken);
-        var rawPath = _blobs.Put(raw.ToArray());
-        _database.QueueOutgoing(id, rawPath);
-        return _database.GetOutgoing(id)!;
+        return _blobs.WithReferences(() =>
+        {
+            var rawPath = _blobs.Put(raw.ToArray());
+            _database.QueueOutgoing(id, rawPath);
+            return _database.GetOutgoing(id)!;
+        });
     }
 
     public async Task<IReadOnlyList<SendResult>> SendPendingAsync(CancellationToken cancellationToken = default)

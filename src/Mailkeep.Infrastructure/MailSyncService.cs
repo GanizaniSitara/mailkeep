@@ -388,6 +388,7 @@ public sealed partial class MailSyncService
             done += _database.QueueRemote(account, chosen, permanently ? "purge" : "delete");
             progress?.Report(new DeleteProgress(account.Address, done, total));
         }
+        _database.SweepUnreferencedBlobs();
         return new DeleteOutcome(done, refused);
     }
 

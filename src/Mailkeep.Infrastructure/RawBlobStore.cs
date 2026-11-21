@@ -20,6 +20,14 @@ public sealed class RawBlobStore
     }
 
     public string Put(ReadOnlySpan<byte> content)
+        => Put(content.ToArray());
+
+    public string Put(byte[] content) => WithReferences(() => PutLocked(content));
+
+    internal T WithReferences<T>(Func<T> operation, TimeSpan? timeout = null)
+        => EncryptedStoreFile.Locked(Path.Combine(_paths.DataDirectory, ".blob-references"), operation, timeout);
+
+    private string PutLocked(ReadOnlySpan<byte> content)
     {
         _paths.EnsureDirectories();
         var hash = Convert.ToHexStringLower(SHA256.HashData(content));
@@ -98,6 +106,8 @@ public sealed class RawBlobStore
             throw new InvalidDataException("MIME cache path escaped its root.");
         return file;
     }
+
+    internal string CacheFile(string relativePath) => CachePath(relativePath);
 
     internal static string RelativePath(string sha) => Path.Combine(sha[..2], sha + ".eml");
 

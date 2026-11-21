@@ -215,6 +215,17 @@ public sealed partial class MailDatabase
         CREATE INDEX IF NOT EXISTS idx_messages_with_attachments ON messages(source, folder, date_utc) WHERE attachment_count > 0;
         CREATE INDEX IF NOT EXISTS idx_fetch_log_started ON fetch_log(started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_outgoing_status_due ON outgoing_messages(status,next_attempt_at,created_at);
+        CREATE TABLE IF NOT EXISTS blob_gc_candidates(raw_path TEXT PRIMARY KEY,last_checked INTEGER NOT NULL DEFAULT 0);
+        CREATE TRIGGER IF NOT EXISTS blob_gc_message_delete AFTER DELETE ON messages WHEN OLD.raw_path IS NOT NULL
+        BEGIN INSERT OR IGNORE INTO blob_gc_candidates(raw_path) VALUES(OLD.raw_path); END;
+        CREATE TRIGGER IF NOT EXISTS blob_gc_message_replace AFTER UPDATE OF raw_path ON messages
+        WHEN OLD.raw_path IS NOT NULL AND OLD.raw_path IS NOT NEW.raw_path
+        BEGIN INSERT OR IGNORE INTO blob_gc_candidates(raw_path) VALUES(OLD.raw_path); END;
+        CREATE TRIGGER IF NOT EXISTS blob_gc_outgoing_delete AFTER DELETE ON outgoing_messages WHEN OLD.raw_path IS NOT NULL
+        BEGIN INSERT OR IGNORE INTO blob_gc_candidates(raw_path) VALUES(OLD.raw_path); END;
+        CREATE TRIGGER IF NOT EXISTS blob_gc_outgoing_replace AFTER UPDATE OF raw_path ON outgoing_messages
+        WHEN OLD.raw_path IS NOT NULL AND OLD.raw_path IS NOT NEW.raw_path
+        BEGIN INSERT OR IGNORE INTO blob_gc_candidates(raw_path) VALUES(OLD.raw_path); END;
         """;
 
     private readonly AppPaths _paths;
@@ -362,6 +373,8 @@ public sealed partial class MailDatabase
         using var copy = new MemoryStream();
         await raw.CopyToAsync(copy, cancellationToken);
         var bytes = copy.ToArray();
+        return _blobs.WithReferences(() =>
+        {
         var rawPath = _blobs.Put(bytes);
         var recipients = message.To.Mailboxes.Concat(message.Cc.Mailboxes)
             .Select(a => a.Address).Where(a => !string.IsNullOrWhiteSpace(a)).Distinct().ToArray();
@@ -373,7 +386,10 @@ public sealed partial class MailDatabase
             bytes.LongLength, isRead, message.Attachments.Count(),
             Truncate(string.IsNullOrWhiteSpace(message.TextBody) ? MailText.FromHtml(message.HtmlBody) : message.TextBody, 1_000_000),
             TruncateNullable(message.HtmlBody, 2_000_000), rawPath);
-        return Upsert(input, reconcileLocalImap, checkpointMailbox);
+        var result = Upsert(input, reconcileLocalImap, checkpointMailbox);
+        if (result == 0) QueueBlobCleanup(rawPath);
+        return result;
+        });
     }
 
     public long Upsert(MessageInput input) => Upsert(input, reconcileLocalImap: false);
@@ -940,6 +956,11 @@ public sealed partial class MailDatabase
         }
         transaction.Commit();
         FolderStorage.Flush();
+        if (permanently || folder.Equals(LocalFolderKinds.Deleted, StringComparison.OrdinalIgnoreCase))
+        {
+            SweepUnreferencedBlobs();
+            PreviewFiles.Cleanup(_paths);
+        }
         return true;
     }
 
@@ -1849,6 +1870,7 @@ public sealed partial class MailDatabase
         origin.Parameters.AddWithValue("$id", id);
         origin.ExecuteNonQuery();
         transaction.Commit();
+        SweepUnreferencedBlobs();
         return true;
     }
 
