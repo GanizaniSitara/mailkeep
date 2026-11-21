@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using Mailkeep.Infrastructure;
 using Mailkeep.Core;
 
 namespace Mailkeep.WinForms;
@@ -86,7 +86,7 @@ internal sealed class AttachmentBar : UserControl
         foreach (var index in _indices)
         {
             var file = _attachments[index];
-            var name = file.FileName;
+            var name = AttachmentSafety.DisplayName(file.FileName);
             if (file.Inline && (name == "attachment" || Path.GetExtension(name).Length == 0))
                 name = $"picture-{++pictures}" + Extension(file.ContentType);
             var stem = Path.GetFileNameWithoutExtension(name);
@@ -117,7 +117,7 @@ internal sealed class AttachmentBar : UserControl
         try
         {
             var path = await Task.Run(() => extract(index));
-            if (!IsDisposed) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            if (!IsDisposed && !Disposing) AttachmentSafety.OpenWithShell(path);
         }
         catch (Exception error)
         {

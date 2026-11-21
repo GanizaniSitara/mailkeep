@@ -474,7 +474,7 @@ internal sealed class AttachmentCatalogIndexer
         if (!reader.Read()) throw new KeyNotFoundException($"Attachment occurrence {occurrenceId} was not found.");
         var rawPath = reader.GetString(0);
         var partIndex = int.Parse(reader.GetString(1), CultureInfo.InvariantCulture) - 1;
-        var fileName = SafeFileName(reader.GetString(2));
+        var fileName = AttachmentSafety.SafeFileName(reader.GetString(2));
         var expectedHash = reader.GetString(3);
         using var stream = OpenBlob(rawPath);
         var message = MimeMessage.Load(stream);
@@ -487,6 +487,7 @@ internal sealed class AttachmentCatalogIndexer
         _paths.EnsureDirectories();
         var destination = Path.Combine(_paths.PreviewDirectory, $"{occurrenceId}-{fileName}");
         File.WriteAllBytes(destination, content);
+        AttachmentSafety.MarkInternetZone(destination);
         return destination;
     }
 
@@ -801,13 +802,6 @@ internal sealed class AttachmentCatalogIndexer
     {
         for (var taken = 0; taken < ids.Count; taken += size)
             yield return string.Join(',', ids.Skip(taken).Take(size));
-    }
-
-    private static string SafeFileName(string value)
-    {
-        var fileName = Path.GetFileName(value);
-        foreach (var invalid in Path.GetInvalidFileNameChars()) fileName = fileName.Replace(invalid, '_');
-        return string.IsNullOrWhiteSpace(fileName) ? "attachment" : fileName;
     }
 
     private static string Sanitize(string value) => value.Length <= 240 ? value : value[..240];

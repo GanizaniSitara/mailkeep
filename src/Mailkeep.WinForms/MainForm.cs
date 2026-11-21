@@ -2244,7 +2244,7 @@ internal sealed partial class MainForm : Form
         try
         {
             var path = await Task.Run(() => _services.Catalog.OpenAttachment(occurrenceId));
-            if (!IsDisposed) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            if (!IsDisposed && !Disposing) AttachmentSafety.OpenWithShell(path);
         }
         catch (Exception exception) { if (!IsDisposed) ShowError("Could not open attachment", exception); }
     }

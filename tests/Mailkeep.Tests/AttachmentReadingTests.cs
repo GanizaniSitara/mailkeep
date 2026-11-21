@@ -16,6 +16,35 @@ public sealed class AttachmentReadingTests : IDisposable
     }
 
     [Theory]
+    [InlineData("attachment.EXE")]
+    [InlineData("script.Js")]
+    [InlineData("script.vbs")]
+    [InlineData("document.hta")]
+    [InlineData("shortcut.lnk")]
+    [InlineData("photo.scr")]
+    [InlineData("invoice.pdf.bat")]
+    [InlineData("run.ps1")]
+    [InlineData("picture.jpg.CMD. ")]
+    [InlineData("program.com")]
+    [InlineData("installer.msi")]
+    [InlineData("image.iso")]
+    [InlineData("note.one")]
+    [InlineData("picture.exe.pdf")]
+    [InlineData("invoice\u202Efdp.txt")]
+    public void UnsafeNamesAreBlockedBeforeShellLaunch(string name)
+    {
+        Assert.Throws<InvalidDataException>(() => AttachmentSafety.EnsureCanOpen(name));
+    }
+
+    [Fact]
+    public void DisplayRemovesDirectionOverridesAndOrdinaryDottedNamesRemainOpenable()
+    {
+        Assert.Equal("invoicefdp.exe", AttachmentSafety.DisplayName("invoice\u202Efdp.exe"));
+        AttachmentSafety.EnsureCanOpen("report.v2.pdf");
+        AttachmentSafety.EnsureCanOpen("family.photo.jpg");
+    }
+
+    [Theory]
     [InlineData(MailContract.LiveSource)]
     [InlineData(MailContract.ArchiveSource)]
     public void DuplicateNamesExtractDistinctDecodedContentWithoutChangingTheMessage(string source)
@@ -34,6 +63,8 @@ public sealed class AttachmentReadingTests : IDisposable
         var first = _services.Database.ExtractAttachment(id, 0);
         var second = _services.Database.ExtractAttachment(id, 1);
         Assert.NotEqual(first, second);
+        if (OperatingSystem.IsWindows())
+            Assert.Equal("[ZoneTransfer]\r\nZoneId=3\r\n", File.ReadAllText(first + ":Zone.Identifier"));
         Assert.Equal(new byte[] { 0, 255, 13, 10, 128 }, File.ReadAllBytes(first));
         Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(second));
         Assert.Equal(before, File.ReadAllBytes(raw));

@@ -354,6 +354,8 @@ if (readingFixture)
     builder.LinkedResources.Add("inline.png", inlineBytes.ToArray(), new MimeKit.ContentType("image", "png")).ContentId = "fixture@inline";
     builder.Attachments.Add(scenario == "attachment-open" ? attachmentOpenName + " first.txt" : "fixture.txt", Encoding.UTF8.GetBytes("First attachment fixture"));
     builder.Attachments.Add(scenario == "attachment-open" ? attachmentOpenName + " second.txt" : "second.txt", Encoding.UTF8.GetBytes("Second attachment fixture"));
+    if (scenario == "attachment-open")
+        builder.Attachments.Add("invoice.exe.txt", Encoding.UTF8.GetBytes("Inert text fixture"));
     using var message = new MimeKit.MimeMessage { Body = builder.ToMessageBody() };
     using var bytes = new MemoryStream();
     message.WriteTo(bytes);
@@ -878,6 +880,13 @@ try
         SendMessage(NativeHandle(FindNamed(window, "Message list")), 0x0100, new IntPtr(13), IntPtr.Zero);
         var opened = WaitForWindow("Automation fixture");
         OpenAndCheck(opened, "Second attachment fixture", "attachment-open-window", attachmentOpenName + " second.txt");
+        Invoke(WaitForEnabled(opened, "Message attachments"));
+        var blockedItem = WaitFor(() => AutomationElement.RootElement.FindFirst(TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.NameProperty, "invoice.exe.txt")), TimeSpan.FromSeconds(5), "blocked attachment missing");
+        Invoke(blockedItem);
+        var warning = WaitForWindow("Could not open attachment");
+        CaptureWindow(NativeHandle(warning), Option(args, "--screenshots"), "attachment-open-blocked");
+        Invoke(FindNamed(warning, "OK"));
         var openedHandle = NativeHandle(opened);
         PostMessage(openedHandle, 0x0010, IntPtr.Zero, IntPtr.Zero);
         WaitUntil(() => !IsWindowVisible(openedHandle), "standalone message did not close");

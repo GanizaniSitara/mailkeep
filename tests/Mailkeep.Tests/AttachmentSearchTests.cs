@@ -173,6 +173,8 @@ public sealed class AttachmentSearchTests
         var match = Assert.IsType<AttachmentMatch>(results.Results[0].AttachmentMatch);
         var preview = services.Catalog.OpenAttachment(match.OccurrenceId);
         Assert.Equal(payload, File.ReadAllBytes(preview));
+        if (OperatingSystem.IsWindows())
+            Assert.Equal("[ZoneTransfer]\r\nZoneId=3\r\n", File.ReadAllText(preview + ":Zone.Identifier"));
     }
 
     [Fact]

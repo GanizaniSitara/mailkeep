@@ -452,7 +452,7 @@ internal sealed class FindMessageForm : Form
         {
             var item = new ListViewItem("") { Tag = hit, ImageKey = hit.AttachmentCount > 0 ? "clip" : "blank" };
             item.SubItems.Add(hit.DisplaySender);
-            item.SubItems.Add(hit.AttachmentMatch is { } attachment ? $"{hit.Subject} — {attachment.FileName}" : hit.Subject);
+            item.SubItems.Add(hit.AttachmentMatch is { } attachment ? $"{hit.Subject} — {AttachmentSafety.DisplayName(attachment.FileName)}" : hit.Subject);
             item.ToolTipText = hit.Snippet;
             item.SubItems.Add(hit.Date?.ToLocalTime().ToString("g") ?? "");
             item.SubItems.Add(IsArchived(hit) ? $"Archive: {hit.Account} / {hit.Folder}" : DisplayFolder(hit.Folder));

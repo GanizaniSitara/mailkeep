@@ -2506,10 +2506,13 @@ public sealed partial class MailDatabase
         var directory = Path.Combine(rootDirectory, attachmentIndex.ToString());
         Directory.CreateDirectory(directory);
         var destination = Path.Combine(directory, AttachmentFileName(entity));
-        using var output = File.Create(destination);
-        if (entity is MimePart { Content: { } mimeContent }) mimeContent.DecodeTo(output);
-        else if (entity is MessagePart { Message: { } attachedMessage }) attachedMessage.WriteTo(output);
-        else throw new InvalidDataException("This attachment type cannot be saved.");
+        using (var output = File.Create(destination))
+        {
+            if (entity is MimePart { Content: { } mimeContent }) mimeContent.DecodeTo(output);
+            else if (entity is MessagePart { Message: { } attachedMessage }) attachedMessage.WriteTo(output);
+            else throw new InvalidDataException("This attachment type cannot be saved.");
+        }
+        AttachmentSafety.MarkInternetZone(destination);
         return destination;
     }
 
@@ -2700,13 +2703,7 @@ public sealed partial class MailDatabase
     {
         var original = part.ContentDisposition?.FileName ?? part.ContentType.Name
             ?? (part is MessagePart ? "message.eml" : "attachment");
-        var name = Path.GetFileName(original.Replace('\\', '/'));
-        foreach (var invalid in Path.GetInvalidFileNameChars()) name = name.Replace(invalid, '_');
-        name = name.TrimEnd(' ', '.');
-        if (string.IsNullOrWhiteSpace(name)) name = "attachment";
-        if (System.Text.RegularExpressions.Regex.IsMatch(name, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase)) name = "_" + name;
-        return name;
+        return AttachmentSafety.SafeFileName(original);
     }
 
     private static IReadOnlyList<AttachmentInfo> ReadAttachments(MimeMessage message)
