@@ -258,6 +258,10 @@ public sealed partial class MailSyncService
             // A server may include its last UID in an n:* range even when n is above that UID.
             var matches = await folder.SearchAsync(query, cancellationToken);
             var uids = matches.Where(uid => uid.Id > maxUid).OrderBy(uid => uid.Id).ToArray();
+            var summaries = uids.Length == 0 ? [] : await folder.FetchAsync(uids,
+                MessageSummaryItems.Flags | MessageSummaryItems.UniqueId, cancellationToken);
+            var readFlags = summaries.ToDictionary(summary => summary.UniqueId.Id,
+                summary => summary.Flags?.HasFlag(MessageFlags.Seen) ?? false);
             progress?.Report(new(account.Name, account.Address, "Downloading", 0, uids.Length));
             foreach (var uid in uids)
             {
@@ -267,11 +271,11 @@ public sealed partial class MailSyncService
                 raw.Position = 0;
                 var message = await MimeMessage.LoadAsync(raw, cancellationToken);
                 raw.Position = 0;
-                var flags = await folder.FetchAsync([uid], MessageSummaryItems.Flags, cancellationToken);
-                var isRead = flags.FirstOrDefault()?.Flags?.HasFlag(MessageFlags.Seen) ?? false;
+                var isRead = readFlags.GetValueOrDefault(uid.Id);
                 var storedId = await _database.UpsertMimeMessageAsync(MailContract.LiveSource, account.Name,
                     account.FolderLabel, $"{uidValidity}:{uid.Id}", uid.Id, uidValidity,
-                    message, raw, isRead, cancellationToken, reconcileLocalImap: true);
+                    message, raw, isRead, cancellationToken, reconcileLocalImap: true,
+                    checkpointMailbox: (scanned + 1) % 25 == 0 ? account.Mailbox : null);
                 if (storedId > 0) newCount++;
                 scanned++;
                 maxUid = Math.Max(maxUid, uid.Id);

@@ -17,6 +17,7 @@ public sealed class ReceiveFixture : IAsyncDisposable
     public bool HoldLogin;
     public TaskCompletionSource ReleaseLogin { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public int Downloads;
+    public int FlagsFetches;
     public uint[] Uids = [1, 2];
     public HashSet<uint> SeenUids { get; } = [];
     public uint UidValidity = 1;
@@ -110,6 +111,7 @@ public sealed class ReceiveFixture : IAsyncDisposable
                         }
                         else
                         {
+                            Interlocked.Increment(ref FlagsFetches);
                             FlagsStarted.TrySetResult();
                             if (HoldFlags) await ReleaseFlags.Task.WaitAsync(_stop.Token);
                             if (RejectFlags) { await writer.WriteLineAsync(tag + " NO fixture flags failed"); continue; }

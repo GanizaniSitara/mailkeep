@@ -215,6 +215,35 @@ public sealed class ReceiveProgressTests
         }
     }
 
+    [Fact]
+    public async Task ImapFlagsAreBatchedAndCommittedCheckpointsBoundInterruptedReplay()
+    {
+        await using var server = new ReceiveFixture(false)
+        {
+            Uids = Enumerable.Range(1, 30).Select(n => (uint)n).ToArray(), RejectDownloadUid = 27
+        };
+        server.SeenUids.Add(2);
+        var root = Directory.CreateTempSubdirectory("mailkeep-imap-checkpoint-");
+        try
+        {
+            var services = new MailkeepServices(root.FullName); services.Database.Initialize();
+            services.Accounts.Save([Account(false, server.Port)]);
+            Assert.False((await services.Sync.SyncAsync("receive")).Ok);
+            Assert.Equal(1, server.FlagsFetches);
+            Assert.Equal(25u, services.Database.GetSyncState("receive", "INBOX")!.MaxUid);
+            Assert.Equal(26, services.Database.ListMessages().Count);
+            Assert.True(services.Database.ListMessages().Single(message => message.ServerUid == 2).IsRead);
+            server.RejectDownloadUid = null;
+            var before = server.Downloads;
+            Assert.True((await services.Sync.SyncAsync("receive")).Ok);
+            Assert.Equal(5, server.Downloads - before); // Only the bounded suffix is replayed.
+            Assert.Equal(2, server.FlagsFetches);
+            Assert.Equal(30u, services.Database.GetSyncState("receive", "INBOX")!.MaxUid);
+            Assert.Equal(30, services.Database.ListMessages().Count);
+        }
+        finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); root.Delete(true); }
+    }
+
     private static MailAccount Account(bool pop, int port) => new("receive", "custom", "fixture@example.invalid", "INBOX", "Inbox", "127.0.0.1", null,
         "fixture-password", new KeepAliveSettings(), MailboxModes.LocalKeep,
         new IncomingServerSettings(pop ? MailProtocols.Pop3 : MailProtocols.Imap, "127.0.0.1", port, MailSecurityModes.None));

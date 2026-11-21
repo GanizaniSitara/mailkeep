@@ -351,9 +351,14 @@ public sealed partial class MailDatabase
         Stream raw,
         bool isRead,
         CancellationToken cancellationToken,
-        bool reconcileLocalImap)
+        bool reconcileLocalImap, string? checkpointMailbox = null)
     {
-        if (IsLocallyDeleted(source, account, folder, sourceKey)) return 0;
+        if (IsLocallyDeleted(source, account, folder, sourceKey))
+        {
+            if (checkpointMailbox is not null && serverUid is { } skippedUid)
+                SetSyncState(account, checkpointMailbox, uidValidity, checked((uint)skippedUid), DateTimeOffset.UtcNow);
+            return 0;
+        }
         using var copy = new MemoryStream();
         await raw.CopyToAsync(copy, cancellationToken);
         var bytes = copy.ToArray();
@@ -368,15 +373,20 @@ public sealed partial class MailDatabase
             bytes.LongLength, isRead, message.Attachments.Count(),
             Truncate(string.IsNullOrWhiteSpace(message.TextBody) ? MailText.FromHtml(message.HtmlBody) : message.TextBody, 1_000_000),
             TruncateNullable(message.HtmlBody, 2_000_000), rawPath);
-        return Upsert(input, reconcileLocalImap);
+        return Upsert(input, reconcileLocalImap, checkpointMailbox);
     }
 
     public long Upsert(MessageInput input) => Upsert(input, reconcileLocalImap: false);
 
-    private long Upsert(MessageInput input, bool reconcileLocalImap)
+    private long Upsert(MessageInput input, bool reconcileLocalImap, string? checkpointMailbox = null)
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
+        void Checkpoint()
+        {
+            if (checkpointMailbox is not null && input.ServerUid is { } uid)
+                WriteSyncState(connection, transaction, input.Account, checkpointMailbox, input.UidValidity, checked((uint)uid), DateTimeOffset.UtcNow);
+        }
         using (var deleted = connection.CreateCommand())
         {
             deleted.Transaction = transaction;
@@ -389,7 +399,7 @@ public sealed partial class MailDatabase
             deleted.Parameters.AddWithValue("$account", input.Account);
             deleted.Parameters.AddWithValue("$folder", input.Folder);
             deleted.Parameters.AddWithValue("$source_key", input.SourceKey);
-            if (deleted.ExecuteScalar() is not null) return 0;
+            if (deleted.ExecuteScalar() is not null) { Checkpoint(); transaction.Commit(); return 0; }
         }
         if (reconcileLocalImap)
         {
@@ -404,20 +414,23 @@ public sealed partial class MailDatabase
                 """;
             AddMessageParameters(match, input);
             long? detached = null;
+            var unchanged = false;
             using (var reader = match.ExecuteReader())
             {
                 if (reader.Read())
                 {
                     // Preserve the provenance of a local copy, and leave a current attachment in place.
-                    if (reader.GetInt64(2) == 0 || !reader.IsDBNull(1)) return 0;
-                    detached = reader.GetInt64(0);
+                    if (reader.GetInt64(2) == 0 || !reader.IsDBNull(1)) unchanged = true;
+                    else detached = reader.GetInt64(0);
                 }
             }
+            if (unchanged) { Checkpoint(); transaction.Commit(); return 0; }
             if (detached.HasValue)
             {
                 match.CommandText = "UPDATE messages SET source_key=$source_key,server_uid=$server_uid,uidvalidity=$uidvalidity WHERE id=$id";
                 match.Parameters.AddWithValue("$id", detached.Value);
                 match.ExecuteNonQuery();
+                Checkpoint();
                 transaction.Commit();
                 FolderStorage.Flush();
                 return 0;
@@ -465,6 +478,7 @@ public sealed partial class MailDatabase
         insertFts.Parameters.AddWithValue("$recipients", string.Join(' ', input.Recipients));
         insertFts.Parameters.AddWithValue("$body_text", input.BodyText);
         insertFts.ExecuteNonQuery();
+        Checkpoint();
         transaction.Commit();
         FolderStorage.Flush();
         return id;
@@ -791,7 +805,14 @@ public sealed partial class MailDatabase
     public void SetSyncState(string account, string folder, uint uidValidity, uint maxUid, DateTimeOffset fetchedAt)
     {
         using var connection = Open();
+        WriteSyncState(connection, null, account, folder, uidValidity, maxUid, fetchedAt);
+    }
+
+    private static void WriteSyncState(SqliteConnection connection, SqliteTransaction? transaction, string account,
+        string folder, uint uidValidity, uint maxUid, DateTimeOffset fetchedAt)
+    {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO sync_state(account, folder, uidvalidity, max_uid, last_fetch_at)
             VALUES ($account, $folder, $uidvalidity, $max_uid, $last_fetch_at)
@@ -2355,7 +2376,11 @@ public sealed partial class MailDatabase
     {
         using var connection = OpenProjection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT 1 FROM local_deletions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key";
+        command.CommandText = """
+            SELECT 1 FROM local_deletions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+            UNION ALL SELECT 1 FROM oe_draft_conversions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+            UNION ALL SELECT 1 FROM adoption_cleanup WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+            """;
         command.Parameters.AddWithValue("$source", source);
         command.Parameters.AddWithValue("$account", account);
         command.Parameters.AddWithValue("$folder", folder);
