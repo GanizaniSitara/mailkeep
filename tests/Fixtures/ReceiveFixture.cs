@@ -61,12 +61,12 @@ public sealed class ReceiveFixture : IAsyncDisposable
                             case "PASS":
                                 if (HoldLogin) await ReleaseLogin.Task.WaitAsync(_stop.Token);
                                 await writer.WriteLineAsync(RejectLogin ? "-ERR fixture login refused" : "+OK"); break;
-                            case "STAT": await writer.WriteLineAsync("+OK 2 1000"); break;
-                            case "UIDL": await writer.WriteAsync("+OK\r\n1 receive-1\r\n2 receive-2\r\n.\r\n"); break;
+                            case "STAT": await writer.WriteLineAsync($"+OK {Uids.Length} 1000"); break;
+                            case "UIDL": await writer.WriteAsync("+OK\r\n" + string.Concat(Uids.Select((uid, i) => $"{i + 1} receive-{uid}\r\n")) + ".\r\n"); break;
                             case "RETR":
                                 await HoldAsync();
                                 Interlocked.Increment(ref Downloads);
-                                var mime = Message(int.Parse(parts[1]));
+                                var mime = Message((int)Uids[int.Parse(parts[1]) - 1]);
                                 await writer.WriteAsync($"+OK {mime.Length}\r\n{mime}.\r\n"); break;
                             case "QUIT": await writer.WriteLineAsync("+OK"); goto NextClient;
                             default: await writer.WriteLineAsync("-ERR unsupported fixture command"); break;
@@ -88,7 +88,8 @@ public sealed class ReceiveFixture : IAsyncDisposable
                     {
                         if (RejectSearch) { await writer.WriteLineAsync(tag + " NO fixture search failed"); continue; }
                         var range = Regex.Match(parts[2], @"UID (\d+):\*");
-                        var start = range.Success ? int.Parse(range.Groups[1].Value) : 1;
+                        var start = range.Success ? uint.Parse(range.Groups[1].Value) : 1u;
+                        if (range.Success && Uids.Length > 0) start = Math.Min(start, Uids.Max());
                         await writer.WriteLineAsync("* SEARCH" + string.Concat(Uids.Where(uid => uid >= start).Select(uid => " " + uid)));
                     }
                     else if (command == "UID" && parts[2].StartsWith("FETCH"))

@@ -27,7 +27,6 @@ public sealed class ReceiveProgressTests
             var silent = Account(pop, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port);
             var good = Account(pop, healthy.Port) with { Name = "healthy", Address = "healthy@example.invalid" };
             services.Accounts.Save([silent, good]);
-            services.Database.SetSetting((pop ? "pop_baseline:" : "imap_baseline:") + good.Name, "fixture");
             var progress = new Capture(); var clock = System.Diagnostics.Stopwatch.StartNew();
             var work = services.Sync.SyncAllAsync(false, receiveProgress: progress);
             while (!progress.Ticks.Any(tick => tick.Result is { Account: "healthy", NewCount: 2 }))
@@ -56,7 +55,7 @@ public sealed class ReceiveProgressTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task ReportsOnlyDurablyStoredMessagesAndDoesNotDownloadAgain(bool pop)
+    public async Task FirstContactDownloadsExistingMailOnceAndReportsOnlyDurablyStoredMessages(bool pop)
     {
         await using var server = new ReceiveFixture(pop) { HoldDownload = true };
         var root = Path.Combine(Path.GetTempPath(), "mailkeep-receive-" + Guid.NewGuid().ToString("N"));
@@ -65,7 +64,6 @@ public sealed class ReceiveProgressTests
             var services = new MailkeepServices(root); services.Database.Initialize();
             var account = Account(pop, server.Port);
             services.Accounts.Save([account]);
-            services.Database.SetSetting((pop ? "pop_baseline:" : "imap_baseline:") + account.Name, "fixture");
             var progress = new Capture();
             var work = services.Sync.SyncAsync(account.Name, receiveProgress: progress);
             await server.DownloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -104,20 +102,55 @@ public sealed class ReceiveProgressTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task FirstContactReportsBaselineRatherThanPretendingToDownload(bool pop)
+    public async Task ExplicitBaselineSkipsOnlyExistingMail(bool pop)
     {
         await using var server = new ReceiveFixture(pop);
         var root = Path.Combine(Path.GetTempPath(), "mailkeep-receive-" + Guid.NewGuid().ToString("N"));
         try
         {
             var services = new MailkeepServices(root); services.Database.Initialize(); services.Accounts.Save([Account(pop, server.Port)]);
-            var progress = new Capture();
-            var result = await services.Sync.SyncAsync("receive", receiveProgress: progress).WaitAsync(TimeSpan.FromSeconds(10));
-            Assert.True(result.Ok, result.Error); Assert.Equal(0, result.NewCount); Assert.Equal(0, server.Downloads);
-            Assert.Contains(progress.Ticks, tick => tick.Stage.StartsWith("Recording existing"));
-            Assert.DoesNotContain(progress.Ticks, tick => tick.Stage == "Downloading");
+            var baseline = await services.Sync.BaselineAsync("receive");
+            Assert.True(baseline.Ok, baseline.Error);
+            Assert.Equal(2, baseline.Scanned);
+            Assert.Empty(services.Database.ListMessages());
+            Assert.Equal(0, server.Downloads);
+            server.Uids = [1, 2, 3];
+            var result = await services.Sync.SyncAsync("receive");
+            Assert.True(result.Ok, result.Error);
+            Assert.Equal(1, result.NewCount);
+            Assert.Equal("Download fixture 3", Assert.Single(services.Database.ListMessages()).Subject);
+            Assert.Equal(1, server.Downloads);
         }
         finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); try { Directory.Delete(root, true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    public async Task RenumberingAfterInterruptedFirstContactReconcilesThePartialDownload()
+    {
+        await using var server = new ReceiveFixture(false) { RejectDownloadUid = 2 };
+        var root = Directory.CreateTempSubdirectory("mailkeep-first-retry-");
+        try
+        {
+            var services = new MailkeepServices(root.FullName);
+            services.Database.Initialize();
+            services.Accounts.Save([Account(false, server.Port)]);
+            Assert.False((await services.Sync.SyncAsync("receive")).Ok);
+            var original = Assert.Single(services.Database.ListMessages());
+            server.UidValidity = 2;
+            server.Uids = [12];
+            server.ImapMime[12] = ReceiveFixture.Message(1);
+            var result = await services.Sync.SyncAsync("receive");
+            Assert.True(result.Ok, result.Error);
+            Assert.Equal(0, result.NewCount);
+            var recovered = Assert.Single(services.Database.ListMessages());
+            Assert.Equal(original.Id, recovered.Id);
+            Assert.Equal("2:12", recovered.SourceKey);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            root.Delete(true);
+        }
     }
 
     [Theory]
@@ -134,8 +167,6 @@ public sealed class ReceiveProgressTests
             db.Initialize();
             var account = Account(false, server.Port);
             services.Accounts.Save([account]);
-            db.SetSyncState(account.Name, account.Mailbox, 1, 0, DateTimeOffset.UtcNow);
-            db.SetSetting("imap_baseline:" + account.Name, "fixture");
             Assert.Equal(2, (await services.Sync.SyncAsync(account.Name)).NewCount);
             var before = db.ListMessages().ToDictionary(m => m.ServerUid!.Value);
             await services.Sync.SetReadManyAsync(before.Values.ToArray(), true);

@@ -4,8 +4,8 @@ The desktop client's Local Mail receive passes open a modeless progress window.
 It lists the participating accounts, including accounts waiting for a receive
 slot, with connection/sign-in/checking states and message counts once the server
 has identified new messages. Counts advance after message storage succeeds.
-First-contact baselining is explicitly described as recording existing mail,
-not downloading it. This does not alter the baseline or collection policy.
+The first receive downloads existing server mail. Users migrating an existing
+archive can run `mailkeep baseline ACCOUNT --execute` to collect only future arrivals.
 
 The window closes automatically when the pass succeeds. If any account fails,
 it stays open on Errors (or reopens there if it was hidden), without activating

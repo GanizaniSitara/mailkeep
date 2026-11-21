@@ -81,13 +81,7 @@ public sealed partial class MailSyncService
     }
 
     /// <summary>Marks everything now on the server as already collected, downloading none of it, so collection
-    /// starts from this moment.
-    ///
-    /// This is what lets both clients run side by side. The other client has been collecting these mailboxes
-    /// for years and its history is already here through the archive; an account added or re-authorized now
-    /// would otherwise pull tens of thousands of messages that are already stored. First contact does this by
-    /// itself, but an account that collected a handful of messages before authorization broke has neither a
-    /// clean slate nor a checkpoint, and only asking for one gets it out of that state.</summary>
+    /// starts from this moment. This is an explicit migration option for users who already have the history.</summary>
     public async Task<SyncResult> BaselineAsync(string accountName, CancellationToken cancellationToken = default)
     {
         var account = _accounts.Load().FirstOrDefault(a => string.Equals(a.Name, accountName, StringComparison.OrdinalIgnoreCase))
@@ -252,40 +246,20 @@ public sealed partial class MailSyncService
                 return new SyncResult(account.Name, newCount, scanned, maxUid, null);
             }
             var state = _database.GetSyncState(account.Name, account.Mailbox);
-            var renumbered = false;
-            if (state is not null && state.UidValidity != 0 && state.UidValidity != uidValidity)
+            if (state?.UidValidity != uidValidity)
             {
                 _database.DetachRenumberedImapMessages(account.Name, account.FolderLabel, uidValidity);
                 state = null;
-                renumbered = true;
-            }
-
-            // First contact records where the mailbox has got to instead of downloading it, exactly as POP3
-            // does. An account added here is one already collected by the other client, so its history is
-            // present through the archive; downloading it again would fetch tens of thousands of messages that
-            // are already stored, which is what makes running both clients side by side unworkable. A durable
-            // marker rather than an empty state decides, so an empty mailbox cannot re-baseline forever.
-            // A mailbox that has never yielded a message counts as first contact whether or not a failed pass
-            // left a row behind: an account that authenticated but collected nothing has no history here.
-            var baselineMarker = "imap_baseline:" + account.Name.ToLowerInvariant();
-            if (!renumbered && (state?.MaxUid ?? 0) == 0 && !_database.HasSetting(baselineMarker))
-            {
-                var present = await folder.SearchAsync(SearchQuery.All, cancellationToken);
-                progress?.Report(new(account.Name, account.Address, "Recording existing messages — no download", 0, 0));
-                maxUid = present.Count > 0 ? present.Max(uid => uid.Id) : 0;
-                scanned = present.Count;
-                _database.SetSyncState(account.Name, account.Mailbox, uidValidity, maxUid, DateTimeOffset.UtcNow);
-                _database.SetSetting(baselineMarker, DateTimeOffset.UtcNow.ToString("O"));
-                await client.DisconnectAsync(true, cancellationToken);
-                return new SyncResult(account.Name, 0, scanned, maxUid, null);
             }
 
             maxUid = state?.MaxUid ?? 0;
             var start = maxUid == uint.MaxValue ? uint.MaxValue : maxUid + 1;
             var query = SearchQuery.Uids(new UniqueIdRange(new UniqueId(start), UniqueId.MaxValue));
-            var uids = await folder.SearchAsync(query, cancellationToken);
-            progress?.Report(new(account.Name, account.Address, "Downloading", 0, uids.Count));
-            foreach (var uid in uids.OrderBy(u => u.Id))
+            // A server may include its last UID in an n:* range even when n is above that UID.
+            var matches = await folder.SearchAsync(query, cancellationToken);
+            var uids = matches.Where(uid => uid.Id > maxUid).OrderBy(uid => uid.Id).ToArray();
+            progress?.Report(new(account.Name, account.Address, "Downloading", 0, uids.Length));
+            foreach (var uid in uids)
             {
                 await using var serverStream = await folder.GetStreamAsync(uid, cancellationToken);
                 using var raw = new MemoryStream();
@@ -301,7 +275,7 @@ public sealed partial class MailSyncService
                 if (storedId > 0) newCount++;
                 scanned++;
                 maxUid = Math.Max(maxUid, uid.Id);
-                progress?.Report(new(account.Name, account.Address, "Downloading", scanned, uids.Count));
+                progress?.Report(new(account.Name, account.Address, "Downloading", scanned, uids.Length));
             }
 
             _database.SetSyncState(account.Name, account.Mailbox, uidValidity, maxUid, DateTimeOffset.UtcNow);
@@ -335,18 +309,6 @@ public sealed partial class MailSyncService
         progress?.Report(new(account.Name, account.Address, "Checking for new messages"));
         var uidls = await client.GetMessageUidsAsync(cancellationToken);
         var seen = _database.PopSeen(account.Name);
-        // First contact establishes the checkpoint instead of downloading: everything already on the server is
-        // the other client's history, so it is recorded as collected and only mail arriving afterwards comes down.
-        // A durable marker, not an empty ledger, decides — an empty mailbox must not re-baseline forever.
-        var baselineMarker = "pop_baseline:" + account.Name.ToLowerInvariant();
-        if (!_database.HasSetting(baselineMarker) && seen.Count == 0)
-        {
-            progress?.Report(new(account.Name, account.Address, "Recording existing messages — no download", 0, 0));
-            foreach (var uidl in uidls) _database.RememberPopUidl(account.Name, uidl);
-            _database.SetSetting(baselineMarker, DateTimeOffset.UtcNow.ToString("O"));
-            await client.DisconnectAsync(true, cancellationToken);
-            return (0, uidls.Count);
-        }
         var newCount = 0;
         var total = uidls.Count(uidl => !seen.Contains(uidl));
         var downloaded = 0;

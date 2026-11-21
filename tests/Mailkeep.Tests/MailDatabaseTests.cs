@@ -495,10 +495,8 @@ public sealed class MailDatabaseTests
     }
 
     [Fact]
-    public async Task FirstSyncSetsTheCheckpointAndOnlyMailArrivingAfterwardsIsDownloaded()
+    public async Task PopCollectsExistingMailAndSubsequentArrivalsOnce()
     {
-        // The fake server holds one message on first contact and grows by one afterwards: the first is the
-        // other client's history and must never download; the second arrives after the checkpoint and must.
         await using var server = new FakePopServer(3, growAfterFirstConnection: true);
         using var temp = new TempDirectory();
         var services = new MailkeepServices(temp.Path);
@@ -516,11 +514,11 @@ public sealed class MailDatabaseTests
         Assert.True(first.Ok, first.Error);
         Assert.True(second.Ok, second.Error);
         Assert.True(third.Ok, third.Error);
-        Assert.Equal(0, first.NewCount);
+        Assert.Equal(1, first.NewCount);
         Assert.Equal(1, second.NewCount);
         Assert.Equal(0, third.NewCount);
-        Assert.Single(services.Database.ListMessages("local"));
-        Assert.Equal(1, server.RetrieveCommands);
+        Assert.Equal(2, services.Database.ListMessages("local").Count);
+        Assert.Equal(2, server.RetrieveCommands);
         Assert.Equal(0, server.DeleteCommands);
     }
 

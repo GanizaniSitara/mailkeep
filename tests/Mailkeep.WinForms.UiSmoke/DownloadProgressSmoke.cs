@@ -30,8 +30,6 @@ internal static class DownloadProgressSmoke
             services.Database.Upsert(new MessageInput(MailContract.LiveSource, "pop-receive", LocalFolderKinds.Inbox,
                 "receive-scroll-old-" + i, null, 0, "Older receive fixture " + i, "sender@example.invalid", "Sender", [],
                 DateTimeOffset.UnixEpoch.AddMinutes(-i), 128, true, 0, "Invented older mail", null, null));
-        foreach (var account in accounts)
-            services.Database.SetSetting((account.EffectiveProtocol == MailProtocols.Pop3 ? "pop_baseline:" : "imap_baseline:") + account.Name, "fixture");
         Exception? failure = null;
         var thread = new Thread(() => { try { RunUi(); } catch (Exception error) { failure = error; } }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
@@ -155,7 +153,6 @@ internal static class DownloadProgressSmoke
                 Check(Finished() && Dialog().Visible && GetForegroundWindow() == before && before == sentinel.Handle, "automatic error window missing or stole foreground");
                 var cancelAccount = Account("cancel-receive", true, cancelled.Port);
                 services.Accounts.Save([.. accounts, cancelAccount]);
-                services.Database.SetSetting("pop_baseline:" + cancelAccount.Name, "fixture");
                 receive = (Task)type.GetMethod("SyncOneAsync", Flags)!.Invoke(main, [cancelAccount])!;
                 Until(() => cancelled.DownloadStarted.Task.IsCompleted);
                 var stop = (Forms.Button)Dialog().GetType().GetField("_stop", Flags)!.GetValue(Dialog())!;
