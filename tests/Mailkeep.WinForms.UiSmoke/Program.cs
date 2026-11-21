@@ -572,9 +572,11 @@ try
         ExportPicturesSmoke.Run(app, root, services, Option(args, "--screenshots"));
         return 0;
     }
-    if (scenario is "shortcuts" or "compose-input" or "compose-send")
+    if (scenario is "shortcuts" or "compose-input" or "compose-send" or "send-recovery")
     {
-        ShortcutSmoke.Run(app, root, services, scenario == "compose-input", Option(args, "--screenshots"), scenario == "compose-send");
+        ShortcutSmoke.Run(app, root, services, scenario == "compose-input", Option(args, "--screenshots"),
+            scenario == "compose-send", scenario == "send-recovery");
+        if (scenario == "send-recovery") ExportFixtureDatabase();
         return 0;
     }
     if (scenario == "image-policies")
@@ -665,6 +667,7 @@ try
     if (scenario == "download-progress")
     {
         await DownloadProgressSmoke.Run(app, root, services, Option(args, "--screenshots"));
+        ExportFixtureDatabase();
         return 0;
     }
     if (scenario == "arrival-scroll")
@@ -1504,6 +1507,16 @@ finally
         catch (Exception error) when (bulkDrag && error is IOException or UnauthorizedAccessException)
         { Console.Error.WriteLine("Retained bulk drag fixture after cleanup lock: " + root); break; }
     }
+}
+
+void ExportFixtureDatabase()
+{
+    if (Option(args, "--screenshots") is not { } directory) return;
+    using var source = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={services.Paths.DatabasePath};Mode=ReadOnly;Pooling=False");
+    using var target = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(directory, scenario + ".db")};Pooling=False");
+    source.Open();
+    target.Open();
+    source.BackupDatabase(target);
 }
 
 static void InspectRemoteImages(AutomationElement window, MailkeepServices services, Func<int> requests, string origin, string? screenshots)

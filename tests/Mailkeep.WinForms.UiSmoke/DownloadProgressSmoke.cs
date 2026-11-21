@@ -166,6 +166,21 @@ internal static class DownloadProgressSmoke
                 services.Accounts.Save(accounts);
                 receive = (Task)type.GetMethod("SyncOneAsync", Flags)!.Invoke(main, [accounts[0]])!;
                 Await(receive); Check(!Get<bool>("_syncRunning") && !Dialog().Visible, "cannot receive again after Stop");
+                var originals = services.Database.ListMessages(accounts[1].Name).ToDictionary(row => row.ServerUid!.Value);
+                imap.UidValidity = 2;
+                imap.Uids = [7, 8];
+                imap.ImapMime[7] = ReceiveFixture.Message(2);
+                receive = (Task)type.GetMethod("SyncOneAsync", Flags)!.Invoke(main, [accounts[1]])!;
+                Await(receive);
+                var afterReset = services.Database.ListMessages(accounts[1].Name);
+                Check(afterReset.Count == 3 && afterReset.Single(row => row.Id == originals[1].Id).ServerUid is null
+                    && afterReset.Single(row => row.Id == originals[2].Id).SourceKey == "2:7"
+                    && afterReset.Single(row => row.ServerUid == 8).Subject == "Download fixture 8",
+                    "UID reset lost local mail, duplicated an existing message, or missed the arrival");
+                Until(() => Get<IReadOnlyList<object>>("_rows").OfType<MessageSummary>()
+                    .Count(row => row.Account == accounts[1].Name) == 3);
+                AddressingSmoke.Capture(main.Handle, screenshots, "download-uid-reset");
+                Console.WriteLine("PASS UID reset: missing original retained, identical MIME rebound, new arrival shown");
                 lock (pop.Commands) Check(!pop.Commands.Contains("DELE"), "POP deleted server mail");
                 lock (imap.Commands) Check(!imap.Commands.Contains("STORE"), "IMAP changed server flags");
                 Console.WriteLine("DOWNLOAD PROGRESS held-transfer UI pulses=" + pulses);

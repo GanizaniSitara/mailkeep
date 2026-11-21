@@ -12,7 +12,8 @@ internal static class ShortcutSmoke
 {
     private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
 
-    public static void Run(string app, string root, MailkeepServices services, bool composeOnly = false, string? screenshots = null, bool sendOnly = false)
+    public static void Run(string app, string root, MailkeepServices services, bool composeOnly = false, string? screenshots = null,
+        bool sendOnly = false, bool recoverSend = false)
     {
         using var smtp = new TcpListener(IPAddress.Loopback, 0);
         smtp.Start();
@@ -57,6 +58,26 @@ internal static class ShortcutSmoke
         services.Accounts.Save(services.Accounts.Load().Where(account => account.Name == "local-fixture").ToArray());
         services.Database.SetSetting("sync.auto", "off");
         services.Database.CreateLocalFolder("Filed fixture", null);
+        OutgoingMessage? receipt = null;
+        if (recoverSend)
+        {
+            var draft = services.Send.SaveDraft(identity.Id, ["recipient@example.invalid"], "shortcut immediate recovery", "Receipt fixture");
+            services.Send.QueueAsync(draft.Id).GetAwaiter().GetResult();
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={services.Paths.DatabasePath};Pooling=False");
+            connection.Open();
+            using var fault = connection.CreateCommand();
+            fault.CommandText = """
+                CREATE TRIGGER fail_sent BEFORE UPDATE OF status ON outgoing_messages WHEN NEW.status='sent'
+                BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END;
+                """;
+            fault.ExecuteNonQuery();
+            var accepted = services.Send.SendQueuedAsync([draft.Id]).GetAwaiter().GetResult().Single();
+            receipt = services.Database.GetOutgoing(draft.Id)!;
+            Check(accepted.Ok && accepted.Error?.Contains("fixture receipt failure") == true
+                && receipt.Status == OutgoingStates.SentUnrecorded && receipt.SentAt.HasValue, "missing durable SMTP receipt");
+            fault.CommandText = "DROP TRIGGER fail_sent";
+            fault.ExecuteNonQuery();
+        }
         if (sendOnly)
         {
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={services.Paths.DatabasePath};Pooling=False");
@@ -76,6 +97,12 @@ internal static class ShortcutSmoke
         if (composeOnly) { Console.WriteLine("PASS compose-input typing,paste,tools plain,html no-delivery"); return; }
         Check(server.Wait(TimeSpan.FromSeconds(5)), "SMTP did not finish");
         Check(received == 1, "Alt+S duplicated delivery");
+        if (recoverSend)
+        {
+            Check(!smtp.Pending(), "recovery opened another SMTP connection");
+            Console.WriteLine("PASS send-recovery SMTP deliveries=1 receipt survived reopening Sent copies=1");
+            return;
+        }
         if (sendOnly) { Console.WriteLine("PASS compose-send closed-before-SMTP-acceptance queued-durable ui-responsive sent-after-acceptance queued-setting=no-delivery"); return; }
         Console.WriteLine("PASS shortcuts plain=alt-s,ctrl-enter,ctrl-s html=alt-s,ctrl-enter,ctrl-s main=navigation,read,unread,search reader=own-message smtp=loopback-once queued=no-delivery");
 
@@ -102,6 +129,33 @@ internal static class ShortcutSmoke
             using var main = (Forms.Form)Activator.CreateInstance(mainType, [root])!;
             main.Show();
             Wait(() => (bool)Get(main, "_ready")!, "main not ready");
+            if (receipt is not null)
+            {
+                var recover = (Task)mainType.GetMethod("SendOutboxAsync", Flags)!.Invoke(main, [true])!;
+                Wait(() => recover.IsCompleted, "Send Outbox did not recover the receipt");
+                recover.GetAwaiter().GetResult();
+                var result = services.Database.GetOutgoing(receipt.Id)!;
+                Check(result.Status == OutgoingStates.Sent && result.SentAt == receipt.SentAt && result.AttemptCount == 0,
+                    "recovery changed the receipt or queued a new delivery");
+                Check(services.Database.ListMessagesForAccounts([identity.Id], LocalFolderKinds.Sent)
+                    .Count(row => row.Subject == receipt.Subject) == 1, "missing or duplicate Sent copy");
+                var folders = (Forms.TreeView)Get(main, "_localTree")!;
+                folders.SelectedNode = folders.Nodes.Find("LocalFolder:" + LocalFolderKinds.Sent, true).Single();
+                Wait(() => ((IReadOnlyList<object>)Get(main, "_rows")!).OfType<MessageSummary>()
+                    .Any(row => row.Subject == receipt.Subject), "recovered message missing in Sent");
+                var sentList = (Forms.ListView)Get(main, "_messages")!;
+                sentList.SelectedIndices.Clear();
+                sentList.SelectedIndices.Add(0);
+                Wait(() => Get(main, "_currentContent") is MessageContent content && content.Summary.Subject == receipt.Subject
+                    && content.BodyText?.Contains("Receipt fixture") == true, "recovered message body missing in Sent");
+                var body = (Forms.RichTextBox)Get(main, "_body")!;
+                Wait(() => body.Visible && body.Text.Contains("Receipt fixture"), "recovered message preview not rendered");
+                main.Update();
+                Pump(200);
+                AddressingSmoke.Capture(main.Handle, screenshots, "send-recovery-sent");
+                main.Close();
+                return;
+            }
             var list = (Forms.ListView)Get(main, "_messages")!;
             Wait(() => list.VirtualListSize > 0, "fixture list not loaded");
             if (sendOnly)

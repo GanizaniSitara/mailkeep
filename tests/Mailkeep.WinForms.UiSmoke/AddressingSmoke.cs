@@ -648,7 +648,7 @@ internal static class AddressingSmoke
     }
 
     /// <summary>The window as it draws itself, through PrintWindow, so it is captured whatever is in front of it.</summary>
-    private static void Capture(IntPtr window, string? folder, string name)
+    internal static void Capture(IntPtr window, string? folder, string name)
     {
         if (folder is null) return;
         Directory.CreateDirectory(folder);
