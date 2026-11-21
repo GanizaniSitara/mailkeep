@@ -11,7 +11,7 @@ public sealed class MailkeepServices
         Accounts = new AccountStore(Paths);
         Identities = new SendingIdentityStore(Paths);
         Catalog = new SearchCatalog(Paths, Accounts);
-        OAuth = new OAuthClient();
+        OAuth = new OAuthClient(accounts: Accounts, identities: Identities);
         Sync = new MailSyncService(Accounts, Database, OAuth);
         Send = new MailSendService(Identities, Database, Blobs, new SmtpOutgoingTransport(OAuth));
     }

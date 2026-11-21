@@ -16,7 +16,22 @@ public sealed class SendingIdentityStore
 
     public SendingIdentityStore(AppPaths paths) => _paths = paths;
 
+    internal string StorePath => _paths.SendingIdentitiesPath;
+
+    internal void RotateRefreshToken(OAuthCredential before, string refreshToken)
+        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, () =>
+        {
+            var identities = Load().Select(identity => identity.OAuth is { } oauth
+                && oauth.ClientId == before.ClientId && oauth.RefreshToken == before.RefreshToken
+                ? identity with { OAuth = oauth with { RefreshToken = refreshToken } } : identity).ToArray();
+            if (identities.Any(identity => identity.OAuth?.ClientId == before.ClientId && identity.OAuth.RefreshToken == refreshToken)) SaveLocked(identities);
+            return true;
+        });
+
     public IReadOnlyList<SendingIdentity> Load()
+        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, LoadLocked);
+
+    private IReadOnlyList<SendingIdentity> LoadLocked()
     {
         if (!File.Exists(_paths.SendingIdentitiesPath)) return [];
         var bytes = WindowsDpapi.Unprotect(File.ReadAllBytes(_paths.SendingIdentitiesPath));
@@ -29,17 +44,24 @@ public sealed class SendingIdentityStore
     public SendingIdentity Require(string id)
         => Find(id) ?? throw new KeyNotFoundException($"Sending identity {id} not found.");
 
+    public void Update(string id, Func<SendingIdentity, SendingIdentity> change)
+        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, () => { UpsertLocked(change(Require(id))); return true; });
+
     public void Save(IEnumerable<SendingIdentity> identities)
+        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, () => { SaveLocked(identities); return true; });
+
+    private void SaveLocked(IEnumerable<SendingIdentity> identities)
     {
         _paths.EnsureDirectories();
         var ordered = OneDefault(identities.OrderBy(i => i.Email).ToArray());
         var payload = JsonSerializer.SerializeToUtf8Bytes(new Envelope(1, ordered), _json);
-        var temporary = _paths.SendingIdentitiesPath + ".tmp";
-        File.WriteAllBytes(temporary, WindowsDpapi.Protect(payload));
-        File.Move(temporary, _paths.SendingIdentitiesPath, true);
+        EncryptedStoreFile.Write(_paths.SendingIdentitiesPath, WindowsDpapi.Protect(payload));
     }
 
     public void Upsert(SendingIdentity identity)
+        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, () => { UpsertLocked(identity); return true; });
+
+    private void UpsertLocked(SendingIdentity identity)
     {
         var identities = Load().ToList();
         var index = identities.FindIndex(value => value.Id.Equals(identity.Id, StringComparison.OrdinalIgnoreCase));
@@ -52,12 +74,18 @@ public sealed class SendingIdentityStore
     }
 
     public void SetDefault(string id)
+        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, () => { SetDefaultLocked(id); return true; });
+
+    private void SetDefaultLocked(string id)
     {
         _ = Require(id);
         Save(Load().Select(identity => identity with { IsDefault = identity.Id.Equals(id, StringComparison.OrdinalIgnoreCase) }));
     }
 
     public bool Remove(string id)
+        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, () => RemoveLocked(id));
+
+    private bool RemoveLocked(string id)
     {
         var identities = Load().ToList();
         if (identities.RemoveAll(identity => identity.Id.Equals(id, StringComparison.OrdinalIgnoreCase)) == 0) return false;

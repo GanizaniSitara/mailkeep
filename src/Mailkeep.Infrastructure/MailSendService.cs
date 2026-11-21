@@ -159,18 +159,18 @@ public sealed class MailSendService
                 Status = SendingIdentityStates.NeedsAuthorization,
                 LastTestError = "No SMTP credential is configured."
             };
-            _identities.Upsert(unconfigured);
+            _identities.Update(id, current => current with { Status = unconfigured.Status, LastTestError = unconfigured.LastTestError });
             return new SendingIdentityTest(identity.Id, identity.Email, false, unconfigured.Status, unconfigured.LastTestError);
         }
         try
         {
             await _transport.VerifyAsync(identity, cancellationToken);
-            _identities.Upsert(identity with { Status = SendingIdentityStates.Ready, LastTestError = null });
+            _identities.Update(id, current => current with { Status = SendingIdentityStates.Ready, LastTestError = null });
             return new SendingIdentityTest(identity.Id, identity.Email, true, SendingIdentityStates.Ready, null);
         }
         catch (Exception exception)
         {
-            _identities.Upsert(identity with { Status = SendingIdentityStates.FailedTest, LastTestError = exception.Message });
+            _identities.Update(id, current => current with { Status = SendingIdentityStates.FailedTest, LastTestError = exception.Message });
             return new SendingIdentityTest(identity.Id, identity.Email, false, SendingIdentityStates.FailedTest, exception.Message);
         }
     }

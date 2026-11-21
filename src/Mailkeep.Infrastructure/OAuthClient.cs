@@ -14,10 +14,20 @@ public sealed class OAuthClient
     private const string GoogleClientSecret = "kSmqreRr0qwBWJgbf5Y-PjSU";
     private const string MicrosoftClientId = "9e5f94bc-e8a4-4e73-b8be-63364c29d753";
     private readonly HttpClient _http;
+    private readonly AccountStore? _accounts;
+    private readonly SendingIdentityStore? _identities;
+    private readonly TimeProvider _clock;
+    private readonly SemaphoreSlim _refresh = new(1);
+    private readonly Dictionary<string, CachedToken> _tokens = new();
+    private sealed record CachedToken(string RefreshToken, string AccessToken, DateTimeOffset ExpiresAt);
 
-    public OAuthClient(HttpClient? http = null)
+    public OAuthClient(HttpClient? http = null, AccountStore? accounts = null, SendingIdentityStore? identities = null,
+        TimeProvider? clock = null)
     {
         _http = http ?? new HttpClient();
+        _accounts = accounts;
+        _identities = identities;
+        _clock = clock ?? TimeProvider.System;
     }
 
     public Task<string> AccessTokenAsync(MailAccount account, CancellationToken cancellationToken = default)
@@ -29,7 +39,18 @@ public sealed class OAuthClient
     private async Task<string> AccessTokenAsync(string providerName, string name, OAuthCredential? oauth,
         string? protocol, bool includeSmtp, CancellationToken cancellationToken)
     {
+        await _refresh.WaitAsync(cancellationToken);
+        try
+        {
+        using var lease = await RefreshLeaseAsync(cancellationToken);
+        if (includeSmtp && _identities is not null) oauth = _identities.Require(name).OAuth;
+        else if (!includeSmtp && _accounts is not null)
+            oauth = _accounts.Load().FirstOrDefault(account => account.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.OAuth;
         if (oauth is null) throw new InvalidOperationException($"{name} has no OAuth credential.");
+        var requestedRefreshToken = oauth.RefreshToken;
+        var key = string.Join('\0', providerName, name, protocol, includeSmtp.ToString(), oauth.ClientId);
+        if (_tokens.TryGetValue(key, out var cached) && cached.RefreshToken == oauth.RefreshToken && cached.ExpiresAt > _clock.GetUtcNow())
+            return cached.AccessToken;
         var provider = Provider(providerName);
         var scopes = oauth.Scopes is { Count: > 0 } ? oauth.Scopes : ScopesFor(providerName, protocol, includeSmtp);
         var form = new Dictionary<string, string>
@@ -40,7 +61,35 @@ public sealed class OAuthClient
         };
         if (!string.IsNullOrWhiteSpace(oauth.ClientSecret)) form["client_secret"] = oauth.ClientSecret;
         if (IsMicrosoft(providerName)) form["scope"] = string.Join(' ', scopes);
-        return (await PostTokenAsync(provider.TokenEndpoint, form, cancellationToken)).AccessToken;
+        var token = await PostTokenAsync(provider.TokenEndpoint, form, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(token.RefreshToken) && token.RefreshToken != oauth.RefreshToken)
+        {
+            _accounts?.RotateRefreshToken(oauth, token.RefreshToken);
+            _identities?.RotateRefreshToken(oauth, token.RefreshToken);
+            oauth = oauth with { RefreshToken = token.RefreshToken };
+        }
+        if (token.ExpiresIn > 0)
+            _tokens[key] = new(_accounts is null && _identities is null ? requestedRefreshToken : oauth.RefreshToken,
+                token.AccessToken, _clock.GetUtcNow().AddSeconds(Math.Max(0, token.ExpiresIn - Math.Min(30, token.ExpiresIn / 10))));
+        return token.AccessToken;
+        }
+        finally { _refresh.Release(); }
+    }
+
+    private async Task<FileStream?> RefreshLeaseAsync(CancellationToken token)
+    {
+        var store = _accounts?.StorePath ?? _identities?.StorePath;
+        if (store is null) return null;
+        var path = Path.Combine(Path.GetDirectoryName(store)!, ".oauth-refresh.lock");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var deadline = _clock.GetUtcNow().AddSeconds(30);
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException error) when ((error.HResult & 0xffff) is 32 or 33 && _clock.GetUtcNow() < deadline)
+            { await Task.Delay(25, token); }
+        }
     }
 
     public Task<OAuthCredential> AuthorizeAsync(string providerName, string address,
@@ -167,15 +216,7 @@ public sealed class OAuthClient
     }
 
     private static void OpenInBrave(string url)
-    {
-        const string brave = @"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe";
-        if (File.Exists(brave))
-        {
-            Process.Start(new ProcessStartInfo(brave, url) { UseShellExecute = false });
-            return;
-        }
-        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-    }
+        => BrowserLauncher.Open(url);
 
     private static string Base64Url(byte[] value) => Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     private static string FormUrlEncoded(IReadOnlyDictionary<string, string> values)
@@ -184,5 +225,6 @@ public sealed class OAuthClient
     private sealed record ProviderDefinition(string AuthorizationEndpoint, string TokenEndpoint, string ClientId, string ClientSecret);
     private sealed record TokenResponse(
         [property: System.Text.Json.Serialization.JsonPropertyName("access_token")] string AccessToken,
-        [property: System.Text.Json.Serialization.JsonPropertyName("refresh_token")] string? RefreshToken);
+        [property: System.Text.Json.Serialization.JsonPropertyName("refresh_token")] string? RefreshToken,
+        [property: System.Text.Json.Serialization.JsonPropertyName("expires_in")] int ExpiresIn = 0);
 }

@@ -20,7 +20,22 @@ public sealed class AccountStore
         _paths = paths;
     }
 
+    internal string StorePath => _paths.AccountsPath;
+
+    internal void RotateRefreshToken(OAuthCredential before, string refreshToken)
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, () =>
+        {
+            var accounts = Load().Select(account => account.OAuth is { } oauth
+                && oauth.ClientId == before.ClientId && oauth.RefreshToken == before.RefreshToken
+                ? account with { OAuth = oauth with { RefreshToken = refreshToken } } : account).ToArray();
+            if (accounts.Any(account => account.OAuth?.ClientId == before.ClientId && account.OAuth.RefreshToken == refreshToken)) SaveLocked(accounts);
+            return true;
+        });
+
     public IReadOnlyList<MailAccount> Load()
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, LoadLocked);
+
+    private IReadOnlyList<MailAccount> LoadLocked()
     {
         if (!File.Exists(_paths.AccountsPath))
         {
@@ -35,6 +50,9 @@ public sealed class AccountStore
     public IReadOnlyList<MailAccount> ReadFrom(string path) => File.Exists(path) ? Read(path) : [];
 
     public int EnsureMailboxModes()
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, EnsureMailboxModesLocked);
+
+    private int EnsureMailboxModesLocked()
     {
         var accounts = Load();
         var missing = accounts.Count(account => string.IsNullOrWhiteSpace(account.MailboxMode));
@@ -46,6 +64,9 @@ public sealed class AccountStore
     }
 
     public int EnsureServerSettings()
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, EnsureServerSettingsLocked);
+
+    private int EnsureServerSettingsLocked()
     {
         var accounts = Load();
         var missing = accounts.Count(account => account.Incoming is null);
@@ -54,6 +75,9 @@ public sealed class AccountStore
     }
 
     public void Save(IEnumerable<MailAccount> accounts)
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, () => { SaveLocked(accounts); return true; });
+
+    private void SaveLocked(IEnumerable<MailAccount> accounts)
     {
         _paths.EnsureDirectories();
         var normalized = accounts.Select(Normalize).OrderBy(account => account.Name).ToArray();
@@ -64,12 +88,13 @@ public sealed class AccountStore
         var payload = JsonSerializer.SerializeToUtf8Bytes(
             new AccountEnvelope(4, normalized), _json);
         var encrypted = WindowsDpapi.Protect(payload);
-        var temporary = _paths.AccountsPath + ".tmp";
-        File.WriteAllBytes(temporary, encrypted);
-        File.Move(temporary, _paths.AccountsPath, overwrite: true);
+        EncryptedStoreFile.Write(_paths.AccountsPath, encrypted);
     }
 
     public void Upsert(MailAccount account)
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, () => { UpsertLocked(account); return true; });
+
+    private void UpsertLocked(MailAccount account)
     {
         var accounts = Load().ToList();
         var index = accounts.FindIndex(a => string.Equals(a.Name, account.Name, StringComparison.OrdinalIgnoreCase));
@@ -85,6 +110,9 @@ public sealed class AccountStore
     }
 
     public bool Remove(string name)
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, () => RemoveLocked(name));
+
+    private bool RemoveLocked(string name)
     {
         var accounts = Load().ToList();
         var removed = accounts.RemoveAll(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
@@ -96,6 +124,9 @@ public sealed class AccountStore
     }
 
     public bool SetKeepAlive(string name, bool enabled, int intervalHours)
+        => EncryptedStoreFile.Locked(_paths.AccountsPath, () => SetKeepAliveLocked(name, enabled, intervalHours));
+
+    private bool SetKeepAliveLocked(string name, bool enabled, int intervalHours)
     {
         var accounts = Load().ToList();
         var index = accounts.FindIndex(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
