@@ -20,6 +20,7 @@ public sealed class ReceiveFixture : IAsyncDisposable
     public uint[] Uids = [1, 2];
     public HashSet<uint> SeenUids { get; } = [];
     public uint UidValidity = 1;
+    public Dictionary<uint, string> ImapMime { get; } = [];
     public bool RejectSearch;
     public bool RejectFlags;
     public bool RejectDownload;
@@ -102,7 +103,7 @@ public sealed class ReceiveFixture : IAsyncDisposable
                             Interlocked.Increment(ref Downloads);
                             foreach (var uid in selected)
                             {
-                                var mime = Message((int)uid);
+                                var mime = ImapMime.GetValueOrDefault(uid) ?? Message((int)uid);
                                 await writer.WriteAsync($"* {Array.IndexOf(Uids, uid) + 1} FETCH (UID {uid} BODY[] {{{mime.Length}}}\r\n{mime})\r\n");
                             }
                         }
@@ -134,7 +135,7 @@ public sealed class ReceiveFixture : IAsyncDisposable
         DownloadStarted.TrySetResult();
         if (HoldDownload) await ReleaseDownload.Task.WaitAsync(_stop.Token);
     }
-    private static string Message(int number) => $"From: fixture@example.invalid\r\nTo: local@example.invalid\r\nSubject: Download fixture {number}\r\nMessage-Id: <receive-{number}@example.invalid>\r\nDate: Wed, 11 Nov 2026 10:00:00 +0000\r\n\r\nInvented receive body {number}.\r\n";
+    public static string Message(int number) => $"From: fixture@example.invalid\r\nTo: local@example.invalid\r\nSubject: Download fixture {number}\r\nMessage-Id: <receive-{number}@example.invalid>\r\nDate: Wed, 11 Nov 2026 10:00:00 +0000\r\n\r\nInvented receive body {number}.\r\n";
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel(); _listener.Stop();

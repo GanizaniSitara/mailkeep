@@ -326,7 +326,7 @@ public sealed partial class MailDatabase
         migrate.ExecuteNonQuery();
     }
 
-    public async Task<long> UpsertMimeMessageAsync(
+    public Task<long> UpsertMimeMessageAsync(
         string source,
         string account,
         string folder,
@@ -337,6 +337,21 @@ public sealed partial class MailDatabase
         Stream raw,
         bool isRead,
         CancellationToken cancellationToken = default)
+        => UpsertMimeMessageAsync(source, account, folder, sourceKey, serverUid, uidValidity, message, raw, isRead,
+            cancellationToken, reconcileLocalImap: false);
+
+    internal async Task<long> UpsertMimeMessageAsync(
+        string source,
+        string account,
+        string folder,
+        string sourceKey,
+        long? serverUid,
+        uint uidValidity,
+        MimeMessage message,
+        Stream raw,
+        bool isRead,
+        CancellationToken cancellationToken,
+        bool reconcileLocalImap)
     {
         if (IsLocallyDeleted(source, account, folder, sourceKey)) return 0;
         using var copy = new MemoryStream();
@@ -353,10 +368,12 @@ public sealed partial class MailDatabase
             bytes.LongLength, isRead, message.Attachments.Count(),
             Truncate(string.IsNullOrWhiteSpace(message.TextBody) ? MailText.FromHtml(message.HtmlBody) : message.TextBody, 1_000_000),
             TruncateNullable(message.HtmlBody, 2_000_000), rawPath);
-        return Upsert(input);
+        return Upsert(input, reconcileLocalImap);
     }
 
-    public long Upsert(MessageInput input)
+    public long Upsert(MessageInput input) => Upsert(input, reconcileLocalImap: false);
+
+    private long Upsert(MessageInput input, bool reconcileLocalImap)
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
@@ -373,6 +390,38 @@ public sealed partial class MailDatabase
             deleted.Parameters.AddWithValue("$folder", input.Folder);
             deleted.Parameters.AddWithValue("$source_key", input.SourceKey);
             if (deleted.ExecuteScalar() is not null) return 0;
+        }
+        if (reconcileLocalImap)
+        {
+            // The SHA-256 raw_path covers every MIME byte, including the Message-ID header
+            // (or its absence). This works for rows collected before this version too.
+            using var match = connection.CreateCommand();
+            match.Transaction = transaction;
+            match.CommandText = """
+                SELECT id,server_uid,uidvalidity FROM messages INDEXED BY idx_messages_raw_path
+                WHERE source=$source AND account=$account AND folder=$folder AND raw_path=$raw_path
+                ORDER BY (source_key=$source_key) DESC,(uidvalidity<>0) DESC,(server_uid IS NULL) DESC,id LIMIT 1
+                """;
+            AddMessageParameters(match, input);
+            long? detached = null;
+            using (var reader = match.ExecuteReader())
+            {
+                if (reader.Read())
+                {
+                    // Preserve the provenance of a local copy, and leave a current attachment in place.
+                    if (reader.GetInt64(2) == 0 || !reader.IsDBNull(1)) return 0;
+                    detached = reader.GetInt64(0);
+                }
+            }
+            if (detached.HasValue)
+            {
+                match.CommandText = "UPDATE messages SET source_key=$source_key,server_uid=$server_uid,uidvalidity=$uidvalidity WHERE id=$id";
+                match.Parameters.AddWithValue("$id", detached.Value);
+                match.ExecuteNonQuery();
+                transaction.Commit();
+                FolderStorage.Flush();
+                return 0;
+            }
         }
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -798,25 +847,20 @@ public sealed partial class MailDatabase
         command.ExecuteNonQuery();
     }
 
-    public void ClearLiveFolder(string account, string folder)
+    internal void DetachRenumberedImapMessages(string account, string folder, uint currentValidity)
     {
         using var connection = Open();
-        using var transaction = connection.BeginTransaction();
-        using var fts = connection.CreateCommand();
-        fts.Transaction = transaction;
-        fts.CommandText = "DELETE FROM messages_fts WHERE rowid IN (SELECT id FROM messages WHERE source=$source AND account=$account AND folder=$folder)";
-        fts.Parameters.AddWithValue("$source", MailContract.LiveSource);
-        fts.Parameters.AddWithValue("$account", account);
-        fts.Parameters.AddWithValue("$folder", folder);
-        fts.ExecuteNonQuery();
         using var messages = connection.CreateCommand();
-        messages.Transaction = transaction;
-        messages.CommandText = "DELETE FROM messages WHERE source=$source AND account=$account AND folder=$folder";
-        messages.Parameters.AddWithValue("$source", MailContract.LiveSource);
+        messages.CommandText = """
+            UPDATE messages SET server_uid=NULL
+            WHERE source='live' AND account=$account AND folder=$folder
+              AND uidvalidity<>$current AND server_uid IS NOT NULL
+            """;
         messages.Parameters.AddWithValue("$account", account);
         messages.Parameters.AddWithValue("$folder", folder);
+        messages.Parameters.AddWithValue("$current", currentValidity);
         messages.ExecuteNonQuery();
-        transaction.Commit();
+        FolderStorage.Flush();
     }
 
     public bool DeleteMessageLocally(long id, bool permanently = false)

@@ -255,9 +255,7 @@ public sealed partial class MailSyncService
             var renumbered = false;
             if (state is not null && state.UidValidity != 0 && state.UidValidity != uidValidity)
             {
-                // The server renumbered its mailbox, so what is held here cannot be matched against it and has
-                // to come down again. That is the opposite of first contact and must not be baselined away.
-                _database.ClearLiveFolder(account.Name, account.FolderLabel);
+                _database.DetachRenumberedImapMessages(account.Name, account.FolderLabel, uidValidity);
                 state = null;
                 renumbered = true;
             }
@@ -299,7 +297,7 @@ public sealed partial class MailSyncService
                 var isRead = flags.FirstOrDefault()?.Flags?.HasFlag(MessageFlags.Seen) ?? false;
                 var storedId = await _database.UpsertMimeMessageAsync(MailContract.LiveSource, account.Name,
                     account.FolderLabel, $"{uidValidity}:{uid.Id}", uid.Id, uidValidity,
-                    message, raw, isRead, cancellationToken);
+                    message, raw, isRead, cancellationToken, reconcileLocalImap: true);
                 if (storedId > 0) newCount++;
                 scanned++;
                 maxUid = Math.Max(maxUid, uid.Id);
