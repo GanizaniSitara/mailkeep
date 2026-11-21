@@ -2191,16 +2191,38 @@ public sealed partial class MailDatabase
         return reader.Read() ? ReadOutgoing(reader) : null;
     }
 
+    internal void RecordSmtpAcceptance(string id)
+    {
+        // Only queue metadata is involved. A held portable-folder lease must not delay this receipt.
+        using var connection = Open(flushFolders: false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE outgoing_messages SET status='sent_unrecorded',sent_at=$now,updated_at=$now,next_attempt_at=NULL,last_error=NULL
+            WHERE id=$id AND status='sending'
+            """;
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.UtcDateTime.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
     public void MarkOutgoingSent(string id)
     {
         var now = DateTimeOffset.UtcNow.UtcDateTime.ToString("O");
         using var connection = Open();
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "UPDATE outgoing_messages SET status='sent',sent_at=$now,updated_at=$now,last_error=NULL WHERE id=$id AND status='sending'";
+            command.CommandText = """
+                UPDATE outgoing_messages SET status='sent',sent_at=coalesce(sent_at,$now),updated_at=$now,next_attempt_at=NULL,last_error=NULL
+                WHERE id=$id AND status IN ('sending','sent_unrecorded')
+                """;
             command.Parameters.AddWithValue("$id", id);
             command.Parameters.AddWithValue("$now", now);
-            if (command.ExecuteNonQuery() != 1) throw new InvalidOperationException("Outgoing message was not claimed for sending.");
+            if (command.ExecuteNonQuery() == 0)
+            {
+                command.CommandText = "SELECT status FROM outgoing_messages WHERE id=$id";
+                if (command.ExecuteScalar() as string == OutgoingStates.Sent) return;
+                throw new InvalidOperationException("Outgoing message was not claimed for sending.");
+            }
         }
         // Delivered, so the message it answered or passed on is marked so. Only after the sending is recorded,
         // and never allowed to fail it: a failure here would put delivered mail back in the Outbox to go again.

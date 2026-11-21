@@ -163,6 +163,8 @@ public sealed class OperationalCatalogTests : IDisposable
         var executable = Environment.GetEnvironmentVariable("MAILKEEP_TEST_CLI");
         if (executable is null) return;
         services.Catalog.SyncOperational();
+        // An up-to-date catalog needs no write, even while another process holds the writer.
+        Sql(services.Paths.DatabasePath, "UPDATE messages SET subject='Pending index change' WHERE id=1");
         Assert.Equal(0L, Sql(services.Paths.DatabasePath, "SELECT count(*) FROM outgoing_messages"));
         using var connection = new SqliteConnection($"Data Source={services.Paths.SearchCatalogPath};Pooling=False");
         connection.Open();

@@ -1,6 +1,7 @@
 using Mailkeep.Core;
 using Mailkeep.Infrastructure;
 using MimeKit;
+using Microsoft.Data.Sqlite;
 
 namespace Mailkeep.Tests;
 
@@ -169,6 +170,49 @@ public sealed class OutgoingAttachmentTests : IDisposable
         Assert.False(Assert.Single(await sender.SendQueuedAsync([first.Id])).Ok);
         Assert.Equal(3, transport.Attempts);
         Assert.Single(_services.Database.ListMessagesForAccounts(["fixture"], LocalFolderKinds.Sent));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcceptedDeliveryRecoversFailedSentRecordingWithoutAnotherSend(bool retryById)
+    {
+        var draft = Save([]);
+        await _services.Send.QueueAsync(draft.Id);
+        using var connection = new SqliteConnection($"Data Source={_services.Paths.DatabasePath};Pooling=False");
+        connection.Open();
+        using var fault = connection.CreateCommand();
+        fault.CommandText = """
+            CREATE TRIGGER fail_sent BEFORE UPDATE OF status ON outgoing_messages WHEN NEW.status='sent'
+            BEGIN SELECT RAISE(ABORT,'fixture sent recording failure'); END;
+            """;
+        fault.ExecuteNonQuery();
+        var transport = new CapturingTransport();
+        var sender = new MailSendService(_services.Identities, _services.Database, _services.Blobs, transport);
+        var accepted = Assert.Single(await sender.SendQueuedAsync([draft.Id]));
+        Assert.True(accepted.Ok);
+        Assert.Contains("fixture sent recording failure", accepted.Error);
+        var pending = _services.Database.GetOutgoing(draft.Id)!;
+        Assert.Equal(OutgoingStates.SentUnrecorded, pending.Status);
+        Assert.NotNull(pending.SentAt);
+        Assert.Equal(0, pending.AttemptCount);
+        Assert.Null(pending.NextAttemptAt);
+        Assert.Null(_services.Database.ClaimOutgoing(draft.Id));
+        Assert.Null(_services.Database.ClaimNextOutgoing());
+
+        fault.CommandText = "DROP TRIGGER fail_sent";
+        fault.ExecuteNonQuery();
+        var reopened = new MailkeepServices(_root);
+        var recovery = new MailSendService(reopened.Identities, reopened.Database, reopened.Blobs, transport);
+        var recorded = Assert.Single(retryById ? await recovery.SendQueuedAsync([draft.Id]) : await recovery.SendPendingAsync());
+        Assert.True(recorded.Ok);
+        Assert.Null(recorded.Error);
+        var sent = reopened.Database.GetOutgoing(draft.Id)!;
+        Assert.Equal(OutgoingStates.Sent, sent.Status);
+        Assert.Equal(pending.SentAt, sent.SentAt);
+        Assert.Single(reopened.Database.ListMessagesForAccounts(["fixture"], LocalFolderKinds.Sent));
+        Assert.Empty(await recovery.SendPendingAsync());
+        Assert.Equal(1, transport.Sends);
     }
 
     [Fact]

@@ -3018,7 +3018,8 @@ internal sealed partial class MainForm : Form
                 await ShowSendFailureAsync([result]);
                 return;
             }
-            _status.Text = "Message sent";
+            _status.Text = result.Error ?? "Message sent";
+            if (result.Error is not null) MessageBox.Show(this, result.Error, "Sent mail", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         catch (Exception error)
         {
@@ -3060,8 +3061,10 @@ internal sealed partial class MainForm : Form
     private async Task SendOutboxAsync(bool announceEmpty)
     {
         if (!RequireReady()) return;
-        var queued = await Task.Run(() => _services.Database.ListOutgoing(OutgoingStates.Outbox, 500));
-        if (queued.Count == 0)
+        var ids = await Task.Run(() => _services.Database.ListOutgoing(OutgoingStates.Outbox, 500)
+            .Concat(_services.Database.ListOutgoing(OutgoingStates.SentUnrecorded, 500)).Select(message => message.Id).ToArray());
+        if (IsDisposed || Disposing) return;
+        if (ids.Length == 0)
         {
             if (announceEmpty) MessageBox.Show(this, "The Outbox is empty.", "Send Outbox", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -3070,11 +3073,15 @@ internal sealed partial class MainForm : Form
         // Send/Receive or Send Outbox; agents send through the CLI, which keeps its --execute guard.
         await RunBusyAsync(null, "Sending queued messages…", async () =>
         {
-            var results = await _services.Send.SendQueuedAsync(queued.Select(message => message.Id).ToArray());
+            var results = await Task.Run(() => _services.Send.SendQueuedAsync(ids));
+            if (IsDisposed || Disposing) return;
             var failures = results.Where(result => !result.Ok).ToArray();
             await ReloadAccountsAsync();
             LoadMessages();
             _ = Task.Run(() => _services.Catalog.SyncOperational());
+            var warnings = results.Where(result => result.Ok && result.Error is not null).Select(result => result.Error).ToArray();
+            if (warnings.Length > 0)
+                MessageBox.Show(this, string.Join(Environment.NewLine, warnings), "Sent mail", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             if (failures.Length > 0)
             {
                 await ShowSendFailureAsync(failures);

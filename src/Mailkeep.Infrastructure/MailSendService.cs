@@ -194,6 +194,12 @@ public sealed class MailSendService
     public async Task<IReadOnlyList<SendResult>> SendPendingAsync(CancellationToken cancellationToken = default)
     {
         var results = new List<SendResult>();
+        if (cancellationToken.IsCancellationRequested) return results;
+        foreach (var accepted in _database.ListOutgoing(OutgoingStates.SentUnrecorded, 1000))
+        {
+            if (cancellationToken.IsCancellationRequested) return results;
+            results.Add(await FinishAcceptedAsync(accepted));
+        }
         while (!cancellationToken.IsCancellationRequested && _database.ClaimNextOutgoing() is { } outgoing)
             results.Add(await SendClaimedAsync(outgoing, cancellationToken));
         return results;
@@ -207,46 +213,74 @@ public sealed class MailSendService
         {
             if (cancellationToken.IsCancellationRequested) break;
             var outgoing = _database.ClaimOutgoing(id);
-            results.Add(outgoing is null
-                ? new SendResult(id, false, "The message is no longer waiting in the Outbox.")
-                : await SendClaimedAsync(outgoing, cancellationToken));
+            if (outgoing is not null)
+                results.Add(await SendClaimedAsync(outgoing, cancellationToken));
+            else if (_database.GetOutgoing(id) is { Status: OutgoingStates.SentUnrecorded } accepted)
+                results.Add(await FinishAcceptedAsync(accepted));
+            else
+                results.Add(new SendResult(id, false, "The message is no longer waiting in the Outbox."));
         }
         return results;
     }
 
     private async Task<SendResult> SendClaimedAsync(OutgoingMessage outgoing, CancellationToken cancellationToken)
     {
-        MimeMessage? sentMessage = null;
-        SendingIdentity? sentIdentity = null;
+        MimeMessage? message = null;
         try
         {
             var identity = RequireIdentity(outgoing.SendingIdentityId);
             if (outgoing.RawPath is null) throw new InvalidDataException("Queued message has no MIME blob.");
-            await using var stream = File.OpenRead(_blobs.FullPath(outgoing.RawPath));
-            sentMessage = await MimeMessage.LoadAsync(stream, cancellationToken);
-            await _transport.SendAsync(identity, sentMessage, cancellationToken);
-            _database.MarkOutgoingSent(outgoing.Id);
-            sentIdentity = identity;
+            using (var stream = _blobs.OpenRead(outgoing.RawPath))
+                message = await MimeMessage.LoadAsync(stream, cancellationToken);
+            await _transport.SendAsync(identity, message, cancellationToken);
         }
         catch (Exception exception)
         {
-            sentMessage?.Dispose();
+            message?.Dispose();
             _database.MarkOutgoingFailed(outgoing.Id, exception.Message);
             return new SendResult(outgoing.Id, false, exception.Message);
         }
-        using (sentMessage)
+
+        using (message) return await FinishAcceptedAsync(outgoing, message);
+    }
+
+    private async Task<SendResult> FinishAcceptedAsync(OutgoingMessage outgoing, MimeMessage? message = null)
+    {
+        // SMTP has accepted delivery. Even cancellation or a permanent storage failure can
+        // only delay local recording. Neither this method nor receipt recovery invokes SMTP.
+        var receiptRecorded = outgoing.Status == OutgoingStates.SentUnrecorded;
+        for (var attempt = 0; ; attempt++)
         {
             try
             {
-                await using var retained = File.OpenRead(_blobs.FullPath(outgoing.RawPath!));
-                await _database.UpsertMimeMessageAsync(MailContract.LiveSource, sentIdentity!.Id, LocalFolderKinds.Sent,
-                    "sent:" + outgoing.Id, null, 0, sentMessage!, retained, true, cancellationToken);
-                return new SendResult(outgoing.Id, true, null);
+                if (!receiptRecorded)
+                {
+                    _database.RecordSmtpAcceptance(outgoing.Id);
+                    receiptRecorded = true;
+                }
+                _database.MarkOutgoingSent(outgoing.Id);
+                break;
             }
-            catch (Exception exception)
+            catch (Exception error)
             {
-                return new SendResult(outgoing.Id, true, "Sent, but the local Sent copy failed: " + exception.Message);
+                if (attempt == 2)
+                    return new SendResult(outgoing.Id, true, "SMTP accepted this message. Recording delivery failed: " + error.Message);
+                await Task.Delay(TimeSpan.FromMilliseconds(100 * (attempt + 1)));
             }
+        }
+
+        try
+        {
+            using var retained = _blobs.OpenRead(outgoing.RawPath!);
+            using var recovered = message is null ? MimeMessage.Load(retained) : null;
+            retained.Position = 0;
+            await _database.UpsertMimeMessageAsync(MailContract.LiveSource, outgoing.SendingIdentityId, LocalFolderKinds.Sent,
+                "sent:" + outgoing.Id, null, 0, message ?? recovered!, retained, true);
+            return new SendResult(outgoing.Id, true, null);
+        }
+        catch (Exception exception)
+        {
+            return new SendResult(outgoing.Id, true, "Sent, but the local Sent copy failed: " + exception.Message);
         }
     }
 

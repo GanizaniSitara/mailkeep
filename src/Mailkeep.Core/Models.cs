@@ -278,6 +278,7 @@ public static class OutgoingStates
     public const string Draft = "draft";
     public const string Outbox = "outbox";
     public const string Sending = "sending";
+    public const string SentUnrecorded = "sent_unrecorded";
     public const string Sent = "sent";
 }
 
