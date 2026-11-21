@@ -206,6 +206,14 @@ public sealed class MailSendService
     }
 
     /// <summary>Explicitly retries only the confirmed messages, once each, regardless of retry delay.</summary>
+    public Task<SendResult> CompleteAcceptedAsync(string id)
+    {
+        var message = _database.GetOutgoing(id);
+        if (message is not { Status: OutgoingStates.SentUnrecorded })
+            throw new InvalidOperationException("Only an accepted receipt can be recorded without transport.");
+        return FinishAcceptedAsync(message);
+    }
+
     public async Task<IReadOnlyList<SendResult>> SendQueuedAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken = default)
     {
         var results = new List<SendResult>();
@@ -225,6 +233,10 @@ public sealed class MailSendService
 
     private async Task<SendResult> SendClaimedAsync(OutgoingMessage outgoing, CancellationToken cancellationToken)
     {
+        using var lease = _database.AcquireOutgoingLease(outgoing.Id);
+        var current = _database.GetOutgoing(outgoing.Id);
+        if (current is null || current.Status != OutgoingStates.Sending || current.UpdatedAt != outgoing.UpdatedAt)
+            return new SendResult(outgoing.Id, false, "The send claim changed before transport started; nothing was transmitted.");
         MimeMessage? message = null;
         try
         {
