@@ -69,6 +69,21 @@ public sealed partial class WritableFolderStorage(AppPaths paths, RawBlobStore b
     public int Flush()
     {
         BulkFolderMigration.CheckAvailable(paths);
+        if (!File.Exists(paths.DatabasePath)) return 0;
+        using (var read = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = paths.DatabasePath, Mode = SqliteOpenMode.ReadOnly, Pooling = false, DefaultTimeout = 5 }.ToString()))
+        {
+            read.Open();
+            if (!BulkFolderMigration.HasTable(read, "bulk_bindings")) return 0;
+            CheckProjectionStorage(read);
+            var messagesPending = Convert.ToInt64(BulkFolderMigration.Scalar(read, "SELECT EXISTS(SELECT 1 FROM bulk_journal)")) != 0;
+            var hierarchyPending = Convert.ToInt64(BulkFolderMigration.Scalar(read, "SELECT EXISTS(SELECT 1 FROM bulk_hierarchy WHERE pending<>0)")) != 0;
+            var bindingsPending = Convert.ToInt64(BulkFolderMigration.Scalar(read, "SELECT EXISTS(SELECT 1 FROM bulk_bindings WHERE created=0)")) != 0;
+            var upgradePending = Convert.ToInt64(BulkFolderMigration.Scalar(read, "SELECT EXISTS(SELECT 1 FROM bulk_bindings)")) != 0
+                && (!Equals(BulkFolderMigration.Scalar(read, "SELECT value FROM settings WHERE key='folder-storage.scoped-hierarchy'"), "1")
+                    || !Equals(BulkFolderMigration.Scalar(read, "SELECT value FROM settings WHERE key='folder-storage.scoped-archive-hierarchy'"), "1"));
+            if (!messagesPending && !hierarchyPending && !bindingsPending && !upgradePending) return 0;
+        }
         try { return new BulkFolderMigration(paths).Flush(); }
         catch (Exception error) when (error is IOException or SqliteException)
         {

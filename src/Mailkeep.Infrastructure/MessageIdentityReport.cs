@@ -195,7 +195,7 @@ public sealed class MessageIdentityReport(AppPaths paths)
         {
             var fullPath = Path.GetFullPath(Path.Combine(root, rawPath));
             if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return new(null, null, "blob_path_outside_store");
-            using var stream = new RawBlobStore(paths).OpenRead(rawPath);
+            using var stream = new RawBlobStore(paths).OpenForInspection(rawPath);
             using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             int read;
             while ((read = stream.Read(buffer)) > 0)
@@ -218,6 +218,7 @@ public sealed class MessageIdentityReport(AppPaths paths)
         catch (FileNotFoundException) { return new(null, null, "missing_blob"); }
         catch (DirectoryNotFoundException) { return new(null, null, "missing_blob"); }
         catch (UnauthorizedAccessException) { return new(null, null, "unreadable_blob"); }
+        catch (InvalidDataException) { return new(null, null, "corrupt_blob"); }
         catch (IOException) { return new(null, null, "unreadable_blob"); }
         catch (FormatException) { return new(hash, null, "malformed_headers"); }
         catch (ArgumentException) { return new(hash, null, "invalid_blob_path_or_headers"); }

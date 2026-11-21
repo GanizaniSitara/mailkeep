@@ -23,6 +23,21 @@ public sealed class StorageConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task EmptyJournalFlushDoesNotTakeHeldOperationLease()
+    {
+        services.Database.FolderStorage.Flush(); // Complete the one-time hierarchy-format upgrade first.
+        using var lease = new FileStream(Path.Combine(root, "bound-folders", ".operation.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        var work = Task.Run(() =>
+        {
+            Assert.Equal(0, services.Database.FolderStorage.Flush());
+            services.Database.SetSetting("empty-journal-test", "committed");
+        });
+        try { await work.WaitAsync(TimeSpan.FromSeconds(2)); }
+        finally { lease.Dispose(); await work.WaitAsync(TimeSpan.FromSeconds(10)); }
+        Assert.Equal("committed", services.Database.GetSetting("empty-journal-test"));
+    }
+
+    [Fact]
     public async Task DelayedFolderWriterDoesNotBlockProjectionReadsAndQueuedMoveCompletes()
     {
         var uuid = (string)Sql("SELECT uuid FROM bulk_bindings WHERE folder='inbox'")!;

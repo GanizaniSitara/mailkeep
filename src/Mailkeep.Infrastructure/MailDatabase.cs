@@ -2315,7 +2315,6 @@ public sealed partial class MailDatabase
         {
             DataSource = _paths.DatabasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
             Pooling = false
         }.ToString());
         connection.Open();
