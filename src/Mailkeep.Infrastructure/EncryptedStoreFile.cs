@@ -34,4 +34,11 @@ internal static class EncryptedStoreFile
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+
+    public static byte[] Read(string path)
+    {
+        // Atomic replacement leaves this complete old snapshot readable without blocking a writer or UI reader.
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var bytes = new MemoryStream(); file.CopyTo(bytes); return bytes.ToArray();
+    }
 }

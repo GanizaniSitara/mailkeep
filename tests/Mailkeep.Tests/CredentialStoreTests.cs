@@ -15,6 +15,23 @@ public sealed class CredentialStoreTests : IDisposable
         false, "outlook", new("smtp.example.invalid", 587), null, Credential, null);
 
     [Fact]
+    public async Task ReadersUseCompleteSnapshotsWithoutWaitingForAStoreWriter()
+    {
+        var paths = new AppPaths(root); var store = new AccountStore(paths); store.Upsert(Account(1));
+        using var held = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
+        var writer = Task.Run(() => EncryptedStoreFile.Locked(paths.AccountsPath, () =>
+        {
+            held.Set(); release.Wait(); return true;
+        }));
+        try
+        {
+            Assert.True(held.Wait(TimeSpan.FromSeconds(5)));
+            Assert.Equal("fixture1", Assert.Single(store.Load()).Name);
+        }
+        finally { release.Set(); await writer; }
+    }
+
+    [Fact]
     public async Task IndependentStoreWritersDoNotLoseAccountsOrIdentities()
     {
         var paths = new AppPaths(root);

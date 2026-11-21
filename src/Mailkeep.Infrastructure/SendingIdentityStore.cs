@@ -29,12 +29,9 @@ public sealed class SendingIdentityStore
         });
 
     public IReadOnlyList<SendingIdentity> Load()
-        => EncryptedStoreFile.Locked(_paths.SendingIdentitiesPath, LoadLocked);
-
-    private IReadOnlyList<SendingIdentity> LoadLocked()
     {
         if (!File.Exists(_paths.SendingIdentitiesPath)) return [];
-        var bytes = WindowsDpapi.Unprotect(File.ReadAllBytes(_paths.SendingIdentitiesPath));
+        var bytes = WindowsDpapi.Unprotect(EncryptedStoreFile.Read(_paths.SendingIdentitiesPath));
         return JsonSerializer.Deserialize<Envelope>(bytes, _json)?.Identities ?? [];
     }
 

@@ -33,9 +33,6 @@ public sealed class AccountStore
         });
 
     public IReadOnlyList<MailAccount> Load()
-        => EncryptedStoreFile.Locked(_paths.AccountsPath, LoadLocked);
-
-    private IReadOnlyList<MailAccount> LoadLocked()
     {
         if (!File.Exists(_paths.AccountsPath))
         {
@@ -145,7 +142,7 @@ public sealed class AccountStore
 
     private IReadOnlyList<MailAccount> Read(string path)
     {
-        var decrypted = WindowsDpapi.Unprotect(File.ReadAllBytes(path));
+        var decrypted = WindowsDpapi.Unprotect(EncryptedStoreFile.Read(path));
         var envelope = JsonSerializer.Deserialize<AccountEnvelope>(decrypted, _json);
         if (envelope?.Accounts is not null)
         {

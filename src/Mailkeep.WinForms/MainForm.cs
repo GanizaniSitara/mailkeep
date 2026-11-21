@@ -2208,14 +2208,14 @@ internal sealed partial class MainForm : Form
                 try
                 {
                     await Task.Run(() => _services.Database.RecoverStaleSending(outgoing.Id, decision == DialogResult.Yes));
-                    if (decision == DialogResult.Yes) await _services.Send.CompleteAcceptedAsync(outgoing.Id);
+                    if (decision == DialogResult.Yes) await Task.Run(() => _services.Send.CompleteAcceptedAsync(outgoing.Id));
                     await RefreshAfterComposeAsync();
                 }
                 catch (Exception error) { ShowError("Could not recover uncertain delivery", error); }
             }
             else if (outgoing.Status == OutgoingStates.SentUnrecorded)
             {
-                await _services.Send.CompleteAcceptedAsync(outgoing.Id);
+                await Task.Run(() => _services.Send.CompleteAcceptedAsync(outgoing.Id));
                 await RefreshAfterComposeAsync();
             }
             else if (outgoing.Status == OutgoingStates.Outbox)

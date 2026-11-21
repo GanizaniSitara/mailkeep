@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using Forms = System.Windows.Forms;
 
@@ -16,6 +18,14 @@ internal static class HtmlPreviewSmoke
             try
             {
                 Forms.Application.SetUnhandledExceptionMode(Forms.UnhandledExceptionMode.ThrowException);
+                using var tracking = new TcpListener(IPAddress.Loopback, 0);
+                tracking.Start();
+                var trackingPort = ((IPEndPoint)tracking.LocalEndpoint).Port;
+                var contacted = tracking.AcceptTcpClientAsync();
+                _ = contacted.ContinueWith(task =>
+                {
+                    if (task.IsCompletedSuccessfully) task.Result.Dispose(); else _ = task.Exception;
+                }, TaskScheduler.Default);
                 SynchronizationContext.SetSynchronizationContext(new Forms.WindowsFormsSynchronizationContext());
                 var directory = Path.GetDirectoryName(Path.GetFullPath(app))!;
                 var loader = Path.Combine(directory, "WebView2Loader.dll");
@@ -43,7 +53,8 @@ internal static class HtmlPreviewSmoke
                     return task.GetAwaiter().GetResult();
                 }
                 string Safe(string html) => (string)assembly.GetType("Mailkeep.WinForms.MainForm", true)!.GetMethod("SafeHtml", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!.Invoke(null, [html, null])!;
-                const string body = "<body style='background:#dedede;font:16px Tahoma'><a id='link' href='https://destination.example.invalid/jobs/123'>Hover this job link</a><p>Readable before pictures finish.</p><img id='picture' width='80' height='80' src='http://127.0.0.1:1/picture'><div style='height:1400px'>Long message</div></body>";
+                var body = "<body style='background:#dedede;font:16px Tahoma'><a id='link' href='https://destination.example.invalid/jobs/123'>Hover this job link</a><p>Readable before pictures finish.</p><img id='picture' width='80' height='80' src='http://127.0.0.1:1/picture'><div style='height:1400px'>Long message</div></body>"
+                    + $"<link rel=dns-prefetch href='//127.0.0.1:{trackingPort}'><link rel=preconnect href='http://127.0.0.1:{trackingPort}'><link rel=stylesheet href='http://127.0.0.1:{trackingPort}/tracker.css'>";
                 type.GetMethod("Show", [typeof(string)])!.Invoke(view, [Safe(body)]);
                 view.Visible = true;
                 Until(() => (bool)type.GetProperty("DocumentLoaded")!.GetValue(view)!);
@@ -58,6 +69,9 @@ internal static class HtmlPreviewSmoke
                 var hold = Stopwatch.StartNew();
                 while (hold.ElapsedMilliseconds < 1500) { Forms.Application.DoEvents(); Thread.Sleep(20); }
                 Check(opened == 0, "hover opened an external link");
+                Check(Script("document.querySelectorAll('link').length") == "0", "resource-hint elements survived sanitization");
+                Check(Script("document.querySelector('meta[http-equiv=\"x-dns-prefetch-control\"]').content") == "\"off\"", "DNS prefetch was not disabled");
+                Check(!contacted.IsCompleted, "a stripped resource hint contacted the loopback tracker");
                 if (screenshots is not null)
                 {
                     Directory.CreateDirectory(screenshots);

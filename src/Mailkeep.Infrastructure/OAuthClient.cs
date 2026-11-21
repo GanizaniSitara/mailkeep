@@ -82,12 +82,12 @@ public sealed class OAuthClient
         if (store is null) return null;
         var path = Path.Combine(Path.GetDirectoryName(store)!, ".oauth-refresh.lock");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var deadline = _clock.GetUtcNow().AddSeconds(30);
+        var waiting = Stopwatch.StartNew();
         while (true)
         {
             token.ThrowIfCancellationRequested();
             try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-            catch (IOException error) when ((error.HResult & 0xffff) is 32 or 33 && _clock.GetUtcNow() < deadline)
+            catch (IOException error) when ((error.HResult & 0xffff) is 32 or 33 && waiting.Elapsed < TimeSpan.FromSeconds(30))
             { await Task.Delay(25, token); }
         }
     }
