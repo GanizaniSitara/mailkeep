@@ -362,12 +362,16 @@ public sealed partial class MailDatabase
         Stream raw,
         bool isRead,
         CancellationToken cancellationToken,
-        bool reconcileLocalImap, string? checkpointMailbox = null)
+        bool reconcileLocalImap, string? checkpointMailbox = null, string? popUidl = null)
     {
-        if (IsLocallyDeleted(source, account, folder, sourceKey))
+        if (popUidl is not null
+                ? HasLocalDeletion(source, account, sourceKey) || IsLocallyDeleted(source, account, folder, sourceKey)
+                : IsLocallyDeleted(source, account, folder, sourceKey))
         {
             if (checkpointMailbox is not null && serverUid is { } skippedUid)
                 SetSyncState(account, checkpointMailbox, uidValidity, checked((uint)skippedUid), DateTimeOffset.UtcNow);
+            if (popUidl is not null)
+                RememberPopUidl(account, popUidl);
             return 0;
         }
         using var copy = new MemoryStream();
@@ -386,7 +390,7 @@ public sealed partial class MailDatabase
             bytes.LongLength, isRead, message.Attachments.Count(),
             Truncate(string.IsNullOrWhiteSpace(message.TextBody) ? MailText.FromHtml(message.HtmlBody) : message.TextBody, 1_000_000),
             TruncateNullable(message.HtmlBody, 2_000_000), rawPath);
-        var result = Upsert(input, reconcileLocalImap, checkpointMailbox);
+        var result = Upsert(input, reconcileLocalImap, checkpointMailbox, popUidl);
         if (result == 0) QueueBlobCleanup(rawPath);
         return result;
         });
@@ -394,7 +398,7 @@ public sealed partial class MailDatabase
 
     public long Upsert(MessageInput input) => Upsert(input, reconcileLocalImap: false);
 
-    private long Upsert(MessageInput input, bool reconcileLocalImap, string? checkpointMailbox = null)
+    private long Upsert(MessageInput input, bool reconcileLocalImap, string? checkpointMailbox = null, string? popUidl = null)
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
@@ -402,15 +406,23 @@ public sealed partial class MailDatabase
         {
             if (checkpointMailbox is not null && input.ServerUid is { } uid)
                 WriteSyncState(connection, transaction, input.Account, checkpointMailbox, input.UidValidity, checked((uint)uid), DateTimeOffset.UtcNow);
+            if (popUidl is not null)
+                WritePopUidl(connection, transaction, input.Account, popUidl);
         }
         using (var deleted = connection.CreateCommand())
         {
             deleted.Transaction = transaction;
-            deleted.CommandText = """
-                SELECT 1 FROM local_deletions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
-                UNION ALL SELECT 1 FROM oe_draft_conversions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
-                UNION ALL SELECT 1 FROM adoption_cleanup WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
-                """;
+            deleted.CommandText = popUidl is not null
+                ? """
+                    SELECT 1 FROM local_deletions WHERE source=$source AND account=$account AND source_key=$source_key
+                    UNION ALL SELECT 1 FROM oe_draft_conversions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+                    UNION ALL SELECT 1 FROM adoption_cleanup WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+                    """
+                : """
+                    SELECT 1 FROM local_deletions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+                    UNION ALL SELECT 1 FROM oe_draft_conversions WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+                    UNION ALL SELECT 1 FROM adoption_cleanup WHERE source=$source AND account=$account AND folder=$folder AND source_key=$source_key
+                    """;
             deleted.Parameters.AddWithValue("$source", input.Source);
             deleted.Parameters.AddWithValue("$account", input.Account);
             deleted.Parameters.AddWithValue("$folder", input.Folder);
@@ -873,7 +885,13 @@ public sealed partial class MailDatabase
     public void RememberPopUidl(string account, string uidl)
     {
         using var connection = Open();
+        WritePopUidl(connection, null, account, uidl);
+    }
+
+    private static void WritePopUidl(SqliteConnection connection, SqliteTransaction? transaction, string account, string uidl)
+    {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT OR IGNORE INTO pop_seen(account,uidl,first_seen_at)
             VALUES ($account,$uidl,$first_seen_at)

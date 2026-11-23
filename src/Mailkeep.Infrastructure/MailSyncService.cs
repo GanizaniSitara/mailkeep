@@ -328,8 +328,8 @@ public sealed partial class MailSyncService
             var message = await MimeMessage.LoadAsync(raw, cancellationToken);
             raw.Position = 0;
             var storedId = await _database.UpsertMimeMessageAsync(MailContract.LiveSource, account.Name,
-                account.FolderLabel, $"pop:{uidl}", null, 0, message, raw, false, cancellationToken);
-            _database.RememberPopUidl(account.Name, uidl);
+                account.FolderLabel, $"pop:{uidl}", null, 0, message, raw, false, cancellationToken,
+                reconcileLocalImap: false, popUidl: uidl);
             if (storedId > 0) newCount++;
             progress?.Report(new(account.Name, account.Address, "Downloading", ++downloaded, total));
         }

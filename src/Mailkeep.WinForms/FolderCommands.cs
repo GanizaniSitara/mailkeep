@@ -541,7 +541,7 @@ internal sealed partial class MainForm
         RemoveRows(ids);
         _status.Text = $"Moving to {target.Display}…";
         var writing = Task.Run(() => _services.Database.MoveImportedMessages(ids, target.Account, target.ArchiveFolder));
-        _filing = writing;
+        TrackFiling(writing);
         try
         {
             var moved = await writing;

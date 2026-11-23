@@ -2605,7 +2605,7 @@ internal sealed partial class MainForm : Form
                 () => binned.Count(pair => _services.Database.RestoreDeleted(pair.Key, pair.Value))) : null;
             if (undo is not null) PushUndo(undo);
             var deleting = Task.Run(() => _services.Sync.DeleteManyAsync(chosen, permanently: permanently));
-            _filing = deleting;
+            TrackFiling(deleting);
             try { await deleting; }
             catch (Exception error)
             {
@@ -3252,7 +3252,7 @@ internal sealed partial class MainForm : Form
                 foreach (var draft in drafts) from[draft.Id] = _services.Database.DraftFolder(draft.Id);
                 return _services.Database.MoveDrafts(drafts.Select(draft => draft.Id).ToArray(), folder);
             });
-            _filing = writing;
+            TrackFiling(writing);
             int moved;
             try { moved = await writing; }
             catch
@@ -3316,7 +3316,7 @@ internal sealed partial class MainForm : Form
         {
             var ids = messages.Select(message => message.Id).ToArray();
             var copying = Task.Run(() => _services.Database.CopyMessagesToLocal(ids, target.Key));
-            _filing = copying;
+            TrackFiling(copying);
             var copied = await copying;
             await ReloadAccountsAsync();
             LoadMessages();
@@ -3371,7 +3371,7 @@ internal sealed partial class MainForm : Form
             after = _services.Database.AdoptedCopies(adopting);
             return count;
         });
-        _filing = writing;
+        TrackFiling(writing);
         try { moved = await writing; }
         catch (Exception error)
         {
@@ -3396,8 +3396,21 @@ internal sealed partial class MainForm : Form
         _undoMoves.Push(undo);
         while (_undoMoves.Count > 20) _undoMoves = new Stack<UndoableMove>(_undoMoves.Take(20).Reverse());
     }
-    /// <summary>The filing still being written, which an undo waits for before it looks at anything.</summary>
+    /// <summary>The filing still being written, which an undo or reload waits for before reading.</summary>
     private Task _filing = Task.CompletedTask;
+
+    private void TrackFiling(Task work)
+    {
+        var previous = _filing;
+        _filing = previous.IsCompleted ? work : AwaitBothAsync(previous, work);
+        static async Task AwaitBothAsync(Task first, Task second)
+        {
+            Exception? firstError = null;
+            try { await first; } catch (Exception error) { firstError = error; }
+            await second;
+            if (firstError is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(firstError);
+        }
+    }
 
     /// <summary>Ctrl+Z: the last filing, put back. Each message returns to the folder it was filed from — a
     /// selection gathered from All Local Mail goes back to several. A message moved again since, or deleted,

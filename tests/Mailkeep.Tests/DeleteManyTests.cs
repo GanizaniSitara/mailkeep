@@ -92,6 +92,48 @@ public sealed class DeleteManyTests
         Assert.Equal(everything.Count, services.Database.ListMessages().Count);
     }
 
+    [Fact]
+    public async Task PopUpsertRecordsPopSeenAtomicallyAndSuppressesDeletedMessageAcrossFolders()
+    {
+        using var temp = new TempDir();
+        var services = new MailkeepServices(temp.Path);
+        services.Database.Initialize();
+        var raw = System.Text.Encoding.UTF8.GetBytes("From: sender@example.invalid\r\nSubject: POP3 atomic\r\n\r\nBody\r\n");
+        using var parsed = MimeKit.MimeMessage.Load(new MemoryStream(raw));
+
+        using var firstRaw = new MemoryStream(raw);
+        var id = await services.Database.UpsertMimeMessageAsync(
+            MailContract.LiveSource, "local:pop@example.invalid", LocalFolderKinds.Inbox,
+            "pop:uidl-42", null, 0, parsed, firstRaw, false, CancellationToken.None,
+            reconcileLocalImap: false, popUidl: "uidl-42");
+
+        Assert.True(id > 0);
+        Assert.Contains("uidl-42", services.Database.PopSeen("local:pop@example.invalid"));
+
+        // Move the message to a custom folder, delete it there, then simulate missing pop_seen.
+        var filed = services.Database.CreateLocalFolder("Filed", null);
+        Assert.Equal(1, services.Database.MoveMessage(id, filed.Key));
+        Assert.True(services.Database.DeleteMessageLocally(id, permanently: true));
+        using (var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={services.Paths.DatabasePath};Pooling=False"))
+        {
+            c.Open();
+            using var q = c.CreateCommand();
+            q.CommandText = "DELETE FROM pop_seen";
+            q.ExecuteNonQuery();
+        }
+        Assert.DoesNotContain("uidl-42", services.Database.PopSeen("local:pop@example.invalid"));
+
+        using var secondRaw = new MemoryStream(raw);
+        var replayed = await services.Database.UpsertMimeMessageAsync(
+            MailContract.LiveSource, "local:pop@example.invalid", LocalFolderKinds.Inbox,
+            "pop:uidl-42", null, 0, parsed, secondRaw, false, CancellationToken.None,
+            reconcileLocalImap: false, popUidl: "uidl-42");
+
+        Assert.Equal(0, replayed);
+        Assert.Empty(services.Database.ListMessages());
+        Assert.Contains("uidl-42", services.Database.PopSeen("local:pop@example.invalid"));
+    }
+
     private sealed class ImmediateProgress(List<DeleteProgress> ticks) : IProgress<DeleteProgress>
     {
         public void Report(DeleteProgress value) => ticks.Add(value);
