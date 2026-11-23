@@ -355,6 +355,7 @@ public sealed partial class MailSyncService
         var total = messages.Count;
         var done = 0;
         var refused = 0;
+        var connectedDeleted = false;
         foreach (var group in messages.GroupBy(message => message.Account, StringComparer.OrdinalIgnoreCase))
         {
             // Sent copies belong to sending identities, which need not have receiving accounts.
@@ -385,10 +386,12 @@ public sealed partial class MailSyncService
             }
             if (chosen.FirstOrDefault(message => message.ServerUid is null) is { } orphan)
                 throw new InvalidOperationException($"Connected message {orphan.Id} has no server UID.");
-            done += _database.QueueRemote(account, chosen, permanently ? "purge" : "delete");
+            var queued = _database.QueueRemote(account, chosen, permanently ? "purge" : "delete");
+            done += queued;
+            if (queued > 0) connectedDeleted = true;
             progress?.Report(new DeleteProgress(account.Address, done, total));
         }
-        _database.SweepUnreferencedBlobs();
+        if (connectedDeleted) _database.SweepUnreferencedBlobs(discoverOrphans: false, onlyUnchecked: true);
         return new DeleteOutcome(done, refused);
     }
 

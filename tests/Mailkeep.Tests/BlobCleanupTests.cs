@@ -102,5 +102,175 @@ public sealed class BlobCleanupTests : IDisposable
         Directory.Delete(directory);
     }
 
+    [Fact]
+    public async Task SweepDoesNotHoldCoordinatorWriteLockWhileScanningExternalBundles()
+    {
+        var retained = services.Blobs.Put(raw);
+        var deleteMe = services.Blobs.Put(Encoding.UTF8.GetBytes("From: fixture@example.invalid\r\nSubject: Delete during sweep\r\n\r\nDelete body"));
+        var orphan = services.Blobs.Put(Encoding.UTF8.GetBytes("From: fixture@example.invalid\r\nSubject: Orphan\r\n\r\nOrphan body"));
+        var orphanFile = services.Blobs.FullPath(orphan);
+        Add("retained", retained);
+        var deleteId = Add("delete-during-sweep", deleteMe);
+
+        var location = Path.Combine(root, "archive");
+        var bundleFile = Path.Combine(location, "fixture", FolderBundle.FileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(bundleFile)!);
+        using (var bundle = FolderBundle.Create(bundleFile, "Fixture", "local")) bundle.Add(raw, false, "fixture");
+        ArchiveManifest.Register(location, bundleFile);
+        new ArchiveStore(services.Paths).Add(location);
+
+        using var bundleLock = new SqliteConnection($"Data Source={bundleFile};Pooling=False");
+        bundleLock.Open();
+        using (var mode = bundleLock.CreateCommand())
+        {
+            mode.CommandText = "PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;";
+            mode.ExecuteNonQuery();
+        }
+
+        var sweep = Task.Run(() => services.Database.SweepUnreferencedBlobs(discoverOrphans: true));
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+            using var probe = new SqliteConnection($"Data Source={services.Paths.DatabasePath};Pooling=False;Default Timeout=1");
+            probe.Open();
+            using (var pragma = probe.CreateCommand())
+            {
+                pragma.CommandText = "PRAGMA busy_timeout=100;";
+                pragma.ExecuteNonQuery();
+            }
+            using (var tx = probe.BeginTransaction()) tx.Rollback();
+            Assert.True(services.Database.DeleteMessageLocally(deleteId, permanently: false));
+        }
+        finally
+        {
+            using var unlock = bundleLock.CreateCommand();
+            unlock.CommandText = "COMMIT; PRAGMA locking_mode=NORMAL;";
+            try { unlock.ExecuteNonQuery(); } catch { }
+            bundleLock.Close();
+            await sweep.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        var result = await sweep;
+        Assert.Null(result.Warning);
+        Assert.Equal(1, result.Removed);
+        Assert.False(File.Exists(orphanFile));
+        Assert.Equal(0, result.Pending);
+    }
+
+    [Fact]
+    public void LiveReferencedCandidatesAreDrainedAndRetiredImportSettingsAreSkipped()
+    {
+        var livePath = services.Blobs.Put(raw);
+        var liveFile = services.Blobs.FullPath(livePath);
+        var draftBytes = Encoding.UTF8.GetBytes("From: draft@example.invalid\r\nSubject: Draft\r\n\r\nDraft body");
+        var draftPath = services.Blobs.Put(draftBytes);
+        var draftFile = services.Blobs.FullPath(draftPath);
+        var orphanBytes = Encoding.UTF8.GetBytes("From: orphan@example.invalid\r\nSubject: Orphan\r\n\r\nOrphan body");
+        var orphanPath = services.Blobs.Put(orphanBytes);
+        var orphanFile = services.Blobs.FullPath(orphanPath);
+
+        Add("live-1", livePath);
+        services.Database.SaveDraft("fixture", [], [], [], "Draft", "Body", rawPath: draftPath);
+        // Simulate a retired multi-MB folder-storage.import:* setting that mentions the orphan SHA in audit text.
+        var orphanSha = Path.GetFileNameWithoutExtension(orphanPath);
+        services.Database.SetSetting("folder-storage.import:user:fixture", new string('x', 500_000) + orphanSha);
+
+        // Pre-seed blob_gc_candidates with live referenced paths (as the pre-fix idle discovery did).
+        using (var c = new SqliteConnection($"Data Source={services.Paths.DatabasePath};Pooling=False"))
+        {
+            c.Open();
+            using var q = c.CreateCommand();
+            q.CommandText = "INSERT OR IGNORE INTO blob_gc_candidates(raw_path,last_checked) VALUES($a,1),($b,1)";
+            q.Parameters.AddWithValue("$a", livePath);
+            q.Parameters.AddWithValue("$b", draftPath);
+            q.ExecuteNonQuery();
+        }
+
+        var result = services.Database.SweepUnreferencedBlobs(discoverOrphans: true);
+        Assert.Null(result.Warning);
+        Assert.Equal(1, result.Removed);
+        Assert.Equal(0, result.Pending);
+        Assert.True(File.Exists(liveFile));
+        Assert.True(File.Exists(draftFile));
+        Assert.False(File.Exists(orphanFile));
+    }
+
+    [Fact]
+    public async Task ConcurrentInsertDuringReadOnlyBundleScanPreventsDeletion()
+    {
+        var candidateBytes = Encoding.UTF8.GetBytes("From: race@example.invalid\r\nSubject: Race\r\n\r\nRace body");
+        var candidatePath = services.Blobs.Put(candidateBytes);
+        var candidateFile = services.Blobs.FullPath(candidatePath);
+
+        var location = Path.Combine(root, "archive");
+        var bundleFile = Path.Combine(location, "fixture", FolderBundle.FileName);
+        Directory.CreateDirectory(Path.GetDirectoryName(bundleFile)!);
+        using (var bundle = FolderBundle.Create(bundleFile, "Fixture", "local")) bundle.Add(raw, false, "fixture");
+        ArchiveManifest.Register(location, bundleFile);
+        new ArchiveStore(services.Paths).Add(location);
+
+        using var bundleLock = new SqliteConnection($"Data Source={bundleFile};Pooling=False");
+        bundleLock.Open();
+        using (var mode = bundleLock.CreateCommand())
+        {
+            mode.CommandText = "PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;";
+            mode.ExecuteNonQuery();
+        }
+
+        var sweep = Task.Run(() => services.Database.SweepUnreferencedBlobs(discoverOrphans: true));
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(200));
+            // Insert a message referencing candidatePath while Phase 1 is blocked on the external archive bundle.
+            Add("late-arrival", candidatePath);
+        }
+        finally
+        {
+            using var unlock = bundleLock.CreateCommand();
+            unlock.CommandText = "COMMIT; PRAGMA locking_mode=NORMAL;";
+            try { unlock.ExecuteNonQuery(); } catch { }
+            bundleLock.Close();
+            await sweep.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        var result = await sweep;
+        Assert.Null(result.Warning);
+        Assert.Equal(0, result.Removed);
+        Assert.True(File.Exists(candidateFile));
+    }
+
+    [Fact]
+    public async Task SoftLocalDeleteDoesNotSweepExistingExternalCandidates()
+    {
+        var path = services.Blobs.Put(raw);
+        var file = services.Blobs.FullPath(path);
+        var keepBytes = Encoding.UTF8.GetBytes("From: soft@example.invalid\r\nSubject: Soft\r\n\r\nSoft body");
+        var keepPath = services.Blobs.Put(keepBytes);
+        var softId = Add("soft-delete", keepPath);
+
+        services.Accounts.Save([
+            new MailAccount("fixture", "custom", "fixture@example.invalid", "INBOX", LocalFolderKinds.Inbox,
+                "pop.example.invalid", null, "secret", new KeepAliveSettings(), MailboxModes.LocalKeep,
+                new IncomingServerSettings(MailProtocols.Pop3, "pop.example.invalid", 995))
+        ]);
+
+        // Seed an unchecked orphan candidate in blob_gc_candidates.
+        using (var c = new SqliteConnection($"Data Source={services.Paths.DatabasePath};Pooling=False"))
+        {
+            c.Open();
+            using var q = c.CreateCommand();
+            q.CommandText = "INSERT OR IGNORE INTO blob_gc_candidates(raw_path,last_checked) VALUES($p,0)";
+            q.Parameters.AddWithValue("$p", path);
+            q.ExecuteNonQuery();
+        }
+
+        var summary = services.Database.GetMessage(softId)!.Summary;
+        var outcome = await services.Sync.DeleteManyAsync([summary], permanently: false);
+        Assert.Equal(1, outcome.Deleted);
+        // Soft local delete moves to Deleted Items without deleting rows or running blob GC.
+        Assert.True(File.Exists(file));
+        Assert.Equal(LocalFolderKinds.Deleted, services.Database.GetMessage(softId)!.Summary.Folder);
+    }
+
     public void Dispose() { SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
 }

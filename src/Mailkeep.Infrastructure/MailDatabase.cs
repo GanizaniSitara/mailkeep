@@ -958,7 +958,7 @@ public sealed partial class MailDatabase
         FolderStorage.Flush();
         if (permanently || folder.Equals(LocalFolderKinds.Deleted, StringComparison.OrdinalIgnoreCase))
         {
-            SweepUnreferencedBlobs();
+            SweepUnreferencedBlobs(discoverOrphans: false, onlyUnchecked: true);
             PreviewFiles.Cleanup(_paths);
         }
         return true;
@@ -1870,7 +1870,7 @@ public sealed partial class MailDatabase
         origin.Parameters.AddWithValue("$id", id);
         origin.ExecuteNonQuery();
         transaction.Commit();
-        SweepUnreferencedBlobs();
+        SweepUnreferencedBlobs(discoverOrphans: false, onlyUnchecked: true);
         return true;
     }
 

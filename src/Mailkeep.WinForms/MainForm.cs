@@ -797,9 +797,14 @@ internal sealed partial class MainForm : Form
             var discover = true;
             while (!_remoteStop.IsCancellationRequested)
             {
-                await Task.Run(() => _services.Database.SweepUnreferencedBlobs(discover), _remoteStop.Token);
+                var result = await Task.Run(() => _services.Database.SweepUnreferencedBlobs(
+                    discoverOrphans: discover, onlyUnchecked: false,
+                    recheckAfter: discover ? null : TimeSpan.FromHours(1)), _remoteStop.Token);
                 discover = false;
-                await Task.Delay(TimeSpan.FromMinutes(5), _remoteStop.Token);
+                var delay = result.Removed > 0 && result.Pending > 0
+                    ? TimeSpan.FromSeconds(5)
+                    : TimeSpan.FromMinutes(5);
+                await Task.Delay(delay, _remoteStop.Token);
             }
         }
         catch (OperationCanceledException) { }
