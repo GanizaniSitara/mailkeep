@@ -37,6 +37,9 @@ Global: --root PATH
   index attachments rebuild --extractor ID [--execute]
                                   Dry-run or invalidate and rebuild one extractor version
   drafts                          List saved drafts
+  file-local --folder KEY_OR_PATH --subject S (--body B|--body-file PATH) [--execute]
+                                  Save an editable draft in Drafts, or an unread copy in Inbox or a local folder.
+                                  Supports --identity, --to, --cc, --bcc, --html-file, --attach and --request-id GUID.
   outbox                          List queued/retrying messages
   recover-send ID --mark-sent|--return-to-outbox [--execute]
                                   Resolve an uncertain send explicitly; never redeliver automatically
@@ -422,6 +425,7 @@ try
         "outbox" => services.Database.ListOutbox(IntOption(commandArgs, "--limit", 100)),
         "recover-send" => await RecoverSendAsync(services, commandArgs),
         "prepare" => Prepare(services, commandArgs),
+        "file-local" => await FileLocalAsync(services, commandArgs),
         "discard" => Discard(services, commandArgs),
         "queue" => await QueueAsync(services, commandArgs),
         "send" => await SendAsync(services, commandArgs),
@@ -690,6 +694,44 @@ static object Discard(MailkeepServices services, string[] args)
     if (draft.Status != OutgoingStates.Draft) throw new InvalidOperationException("Only a draft can be discarded.");
     if (!args.Contains("--execute", StringComparer.OrdinalIgnoreCase)) return new { ExecuteRequired = true, Draft = draft };
     return new { Discarded = services.Send.DiscardDraft(draft.Id), draft.Id };
+}
+
+static async Task<object> FileLocalAsync(MailkeepServices services, string[] args)
+{
+    var folder = new MailFiling(services).ResolveFolder(RequiredOption(args, "--folder"));
+    if (folder.Kind == LocalFolderKinds.Outbox) throw new ArgumentException("Use queue to put a message in Outbox.");
+    var subject = RequiredOption(args, "--subject");
+    var html = HtmlBody(args);
+    var body = Body(args, html);
+    var attachments = AttachmentArguments.Parse(args);
+    var identity = StringOption(args, "--identity") is { } selected
+        ? services.Identities.Require(selected) : services.Identities.Load().FirstOrDefault(i => i.IsDefault);
+    var to = Addresses(StringOption(args, "--to"));
+    var cc = Addresses(StringOption(args, "--cc"));
+    var bcc = Addresses(StringOption(args, "--bcc"));
+    var request = StringOption(args, "--request-id");
+    var id = "local-" + (request is null ? Guid.NewGuid() : Guid.Parse(request)).ToString("N");
+    if (folder.Kind == LocalFolderKinds.Drafts && identity is null)
+        throw new ArgumentException("Choose a sending identity for the editable draft.");
+    if (!args.Contains("--execute", StringComparer.OrdinalIgnoreCase))
+        return new { ExecuteRequired = true, Folder = folder.Path, Subject = subject };
+    if (folder.Kind == LocalFolderKinds.Drafts)
+        return services.Send.SaveDraft(identity!.Id, to, subject, body, cc, bcc, id, attachments, html);
+
+    using var message = new MimeKit.MimeMessage { Subject = subject, MessageId = id + "@mailkeep.local" };
+    message.From.Add(new MimeKit.MailboxAddress(identity?.DisplayName ?? "Mailkeep", identity?.Email ?? "local@mailkeep.invalid"));
+    foreach (var address in to) message.To.Add(MimeKit.MailboxAddress.Parse(address));
+    foreach (var address in cc) message.Cc.Add(MimeKit.MailboxAddress.Parse(address));
+    foreach (var address in bcc) message.Bcc.Add(MimeKit.MailboxAddress.Parse(address));
+    var builder = new MimeKit.BodyBuilder { TextBody = body, HtmlBody = html };
+    foreach (var path in attachments) builder.Attachments.Add(path);
+    message.Body = builder.ToMessageBody();
+    using var raw = new MemoryStream();
+    await message.WriteToAsync(raw);
+    raw.Position = 0;
+    var stored = await services.Database.UpsertMimeMessageAsync(MailContract.LiveSource, MailContract.LocalCopyAccount,
+        folder.Key, "copy:" + id, null, 0, message, raw, false);
+    return new { Id = stored, Folder = folder.Path };
 }
 
 static object Prepare(MailkeepServices services, string[] args)

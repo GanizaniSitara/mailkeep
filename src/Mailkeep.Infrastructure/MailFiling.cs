@@ -94,6 +94,14 @@ public sealed class MailFiling(MailkeepServices services)
             if (Convert.ToInt64(command.ExecuteScalar()) != 0)
                 throw new InvalidOperationException("The Local copy of this imported message was deleted. Filing must not restore it.");
         }
+        var target = ResolveFolder(destination);
+        if (!target.CanMoveInto) throw new InvalidOperationException("Messages cannot be filed into Drafts or Outbox.");
+        return new(id, subject, source, account, from, key, uid, target.Key, target.Path,
+            source == MailContract.ArchiveSource ? "adopt_imported_using_existing_app_behavior" : "local_move");
+    }
+
+    public Folder ResolveFolder(string destination)
+    {
         var folders = Folders();
         var target = folders.SingleOrDefault(folder => folder.Key == destination);
         if (target is null)
@@ -102,9 +110,7 @@ public sealed class MailFiling(MailkeepServices services)
             if (matches.Length != 1) throw new ArgumentException("Destination must be a unique local folder key or full path from folders --local.");
             target = matches[0];
         }
-        if (!target.CanMoveInto) throw new InvalidOperationException("Messages cannot be filed into Drafts or Outbox.");
-        return new(id, subject, source, account, from, key, uid, target.Key, target.Path,
-            source == MailContract.ArchiveSource ? "adopt_imported_using_existing_app_behavior" : "local_move");
+        return target;
     }
 
     public async Task<Result> MoveAsync(string messageId, string destination, bool execute = false, bool server = false,
