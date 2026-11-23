@@ -697,7 +697,6 @@ internal sealed partial class MainForm : Form
         try
         {
             _status.Text = "Opening your mailbox…";
-            if (!StartupDiagnostics.Skip("WEBVIEW")) _ = StartupDiagnostics.TimeAsync("StartReadingPaneAsync", StartReadingPaneAsync);
             var startup = await Task.Run(() =>
             {
                 _services.Database.Initialize();
@@ -780,11 +779,13 @@ internal sealed partial class MainForm : Form
         TimingLog.Mark(_ready ? "revealed" : "revealed while opening mailbox");
         // Idle comes once the queue is empty, after the window's paints.
         Application.Idle += Painted;
-        static void Painted(object? sender, EventArgs e)
+        void Painted(object? sender, EventArgs e)
         {
             Application.Idle -= Painted;
             TimingLog.Mark("painted");
             StartupDiagnostics.Mark("application idle after reveal (not presentation)");
+            if (!IsDisposed && !Disposing && !StartupDiagnostics.Skip("WEBVIEW"))
+                _ = StartupDiagnostics.TimeAsync("StartReadingPaneAsync", StartReadingPaneAsync);
         }
     }
 
