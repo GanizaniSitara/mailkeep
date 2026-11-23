@@ -1,4 +1,7 @@
 <Project>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <RuntimeFrameworkVersion>10.0.15</RuntimeFrameworkVersion>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
